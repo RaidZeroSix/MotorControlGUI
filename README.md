@@ -51,18 +51,31 @@ YourWorkspace/
 
 ### Installation Steps
 
-#### Option 1: Automated Installation (Recommended)
+#### Option 1: Complete Automated Setup (Recommended)
+
+**On Windows (PowerShell):**
+```powershell
+# Clone the repository
+git clone https://github.com/RaidZeroSix/MotorControlGUI.git
+cd MotorControlGUI
+
+# Run the complete setup script
+powershell -ExecutionPolicy Bypass -File setup.ps1
+```
+
+The `setup.ps1` script automatically handles EVERYTHING:
+1. Checks for Python 3.8+ and Git
+2. Clones pyorcasdk to parent directory (if not present)
+3. Initializes git submodules
+4. Creates virtual environment
+5. Installs pyorcasdk from local source
+6. Installs all dependencies (with Windows-specific workarounds)
+7. Offers to run the application immediately
 
 **On Linux/Mac:**
 ```bash
 cd motor_gui
 ./install.sh
-```
-
-**On Windows:**
-```cmd
-cd motor_gui
-install.bat
 ```
 
 The install script will:
