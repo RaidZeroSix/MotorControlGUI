@@ -1,0 +1,356 @@
+"""
+Motor Controller Module
+
+Manages the Orca motor communication and control loop.
+Uses Force Mode and Sleep Mode only, with custom PID position control.
+"""
+
+import threading
+import time
+from typing import Optional, Callable
+from dataclasses import dataclass
+from enum import Enum
+
+from pyorcasdk import Actuator, MotorMode, OrcaError
+from pid_controller import PIDController, PIDParameters
+
+
+class ControlMode(Enum):
+    """Control modes for the application"""
+    SLEEP = "sleep"
+    FORCE_DIRECT = "force_direct"  # Direct force control
+    POSITION = "position"  # Position control using PID
+
+
+@dataclass
+class MotorState:
+    """Current state of the motor"""
+    position_um: int = 0
+    force_mN: int = 0
+    power_W: int = 0
+    temperature_C: int = 0
+    voltage_mV: int = 0
+    errors: int = 0
+    mode: MotorMode = MotorMode.SleepMode
+    control_mode: ControlMode = ControlMode.SLEEP
+    connected: bool = False
+    running: bool = False
+
+
+@dataclass
+class MotorCommand:
+    """Commands to send to the motor"""
+    control_mode: ControlMode = ControlMode.SLEEP
+    force_setpoint_mN: float = 0.0
+    position_setpoint_um: float = 0.0
+
+
+class MotorController:
+    """
+    Main motor controller class.
+
+    Manages motor communication, control loop, and PID position control.
+    """
+
+    def __init__(self, name: str = "OrcaMotor", update_rate_hz: float = 1000.0):
+        """
+        Initialize the motor controller.
+
+        Args:
+            name: Name for the actuator
+            update_rate_hz: Control loop update rate in Hz (0 = maximum speed, no sleep)
+        """
+        self.actuator = Actuator(name)
+        self.update_rate_hz = update_rate_hz
+        self.update_period = 1.0 / update_rate_hz if update_rate_hz > 0 else 0
+
+        # PID controller with default parameters
+        pid_params = PIDParameters(
+            kp=0.1,
+            ki=0.01,
+            kd=0.005,
+            max_output=30000.0,
+            min_output=-30000.0,
+            sample_time=self.update_period
+        )
+        self.pid = PIDController(pid_params)
+
+        # State
+        self.state = MotorState()
+        self.command = MotorCommand()
+
+        # Thread safety
+        self._state_lock = threading.Lock()
+        self._command_lock = threading.Lock()
+
+        # Control loop thread
+        self._control_thread: Optional[threading.Thread] = None
+        self._stop_flag = threading.Event()
+
+        # Callback for state updates (called from control thread)
+        self.state_update_callback: Optional[Callable[[MotorState], None]] = None
+
+    def connect(self, port, baud_rate: int = 1000000, interframe_delay: int = 80) -> bool:
+        """
+        Connect to the motor via serial port.
+
+        Args:
+            port: Serial port (int for COM port number or str for device path like '/dev/ttyUSB0')
+            baud_rate: Baud rate for communication (default 1M for high-speed)
+            interframe_delay: Interframe delay in microseconds
+
+        Returns:
+            True if connection successful, False otherwise
+        """
+        try:
+            error = self.actuator.open_serial_port(port, baud_rate, interframe_delay)
+            if error:
+                print(f"Error opening serial port: {error.what()}")
+                return False
+
+            # Clear any existing errors
+            self.actuator.clear_errors()
+
+            # Enable streaming for high-speed communication
+            self.actuator.enable_stream()
+
+            # Set to sleep mode initially
+            error = self.actuator.set_mode(MotorMode.SleepMode)
+            if error:
+                print(f"Error setting sleep mode: {error.what()}")
+                return False
+
+            with self._state_lock:
+                self.state.connected = True
+                self.state.mode = MotorMode.SleepMode
+                self.state.control_mode = ControlMode.SLEEP
+
+            return True
+
+        except Exception as e:
+            print(f"Exception during connection: {e}")
+            return False
+
+    def disconnect(self):
+        """Disconnect from the motor"""
+        self.stop_control_loop()
+
+        try:
+            # Set to sleep mode before disconnecting
+            self.actuator.set_mode(MotorMode.SleepMode)
+            self.actuator.disable_stream()
+            self.actuator.close_serial_port()
+        except Exception as e:
+            print(f"Exception during disconnect: {e}")
+
+        with self._state_lock:
+            self.state.connected = False
+            self.state.running = False
+
+    def start_control_loop(self) -> bool:
+        """
+        Start the control loop thread.
+
+        Returns:
+            True if started successfully
+        """
+        if self._control_thread is not None and self._control_thread.is_alive():
+            print("Control loop already running")
+            return False
+
+        if not self.state.connected:
+            print("Not connected to motor")
+            return False
+
+        self._stop_flag.clear()
+        self._control_thread = threading.Thread(target=self._control_loop, daemon=True)
+        self._control_thread.start()
+
+        with self._state_lock:
+            self.state.running = True
+
+        return True
+
+    def stop_control_loop(self):
+        """Stop the control loop thread"""
+        if self._control_thread is None or not self._control_thread.is_alive():
+            return
+
+        self._stop_flag.set()
+        self._control_thread.join(timeout=2.0)
+
+        with self._state_lock:
+            self.state.running = False
+
+    def set_control_mode(self, mode: ControlMode):
+        """
+        Set the control mode.
+
+        Args:
+            mode: Desired control mode
+        """
+        with self._command_lock:
+            self.command.control_mode = mode
+
+        # Reset PID when switching to position mode
+        if mode == ControlMode.POSITION:
+            self.pid.reset()
+
+    def set_force_setpoint(self, force_mN: float):
+        """
+        Set the force setpoint for direct force control.
+
+        Args:
+            force_mN: Force in millinewtons
+        """
+        with self._command_lock:
+            self.command.force_setpoint_mN = force_mN
+
+    def set_position_setpoint(self, position_um: float):
+        """
+        Set the position setpoint for position control.
+
+        Args:
+            position_um: Position in micrometers
+        """
+        with self._command_lock:
+            self.command.position_setpoint_um = position_um
+
+    def update_pid_parameters(self, kp: Optional[float] = None,
+                             ki: Optional[float] = None,
+                             kd: Optional[float] = None):
+        """
+        Update PID controller parameters.
+
+        Args:
+            kp: Proportional gain
+            ki: Integral gain
+            kd: Derivative gain
+        """
+        self.pid.update_parameters(kp=kp, ki=ki, kd=kd)
+
+    def get_state(self) -> MotorState:
+        """
+        Get a copy of the current motor state.
+
+        Returns:
+            Copy of the current MotorState
+        """
+        with self._state_lock:
+            # Create a copy to avoid threading issues
+            return MotorState(
+                position_um=self.state.position_um,
+                force_mN=self.state.force_mN,
+                power_W=self.state.power_W,
+                temperature_C=self.state.temperature_C,
+                voltage_mV=self.state.voltage_mV,
+                errors=self.state.errors,
+                mode=self.state.mode,
+                control_mode=self.state.control_mode,
+                connected=self.state.connected,
+                running=self.state.running
+            )
+
+    def emergency_stop(self):
+        """Emergency stop - immediately switch to sleep mode"""
+        self.set_control_mode(ControlMode.SLEEP)
+        try:
+            self.actuator.set_mode(MotorMode.SleepMode)
+        except Exception as e:
+            print(f"Error during emergency stop: {e}")
+
+    def _control_loop(self):
+        """Main control loop (runs in separate thread)"""
+        print(f"Control loop started (target: {self.update_rate_hz if self.update_rate_hz > 0 else 'MAX'} Hz)")
+
+        last_time = time.time()
+        loop_count = 0
+        rate_report_interval = 1.0  # Report actual rate every second
+
+        while not self._stop_flag.is_set():
+            loop_start = time.time()
+
+            try:
+                # Run the actuator communication
+                self.actuator.run()
+
+                # Read current state from motor (using stream data for efficiency)
+                stream_data = self.actuator.get_stream_data()
+
+                # Get current command
+                with self._command_lock:
+                    current_command = MotorCommand(
+                        control_mode=self.command.control_mode,
+                        force_setpoint_mN=self.command.force_setpoint_mN,
+                        position_setpoint_um=self.command.position_setpoint_um
+                    )
+
+                # Execute control logic based on mode
+                if current_command.control_mode == ControlMode.SLEEP:
+                    # Sleep mode - no force output
+                    if self.state.mode != MotorMode.SleepMode:
+                        self.actuator.set_mode(MotorMode.SleepMode)
+                        with self._state_lock:
+                            self.state.mode = MotorMode.SleepMode
+
+                elif current_command.control_mode == ControlMode.FORCE_DIRECT:
+                    # Direct force control
+                    if self.state.mode != MotorMode.ForceMode:
+                        self.actuator.set_mode(MotorMode.ForceMode)
+                        with self._state_lock:
+                            self.state.mode = MotorMode.ForceMode
+
+                    # Set the commanded force
+                    self.actuator.set_streamed_force_mN(int(current_command.force_setpoint_mN))
+
+                elif current_command.control_mode == ControlMode.POSITION:
+                    # Position control using PID
+                    if self.state.mode != MotorMode.ForceMode:
+                        self.actuator.set_mode(MotorMode.ForceMode)
+                        with self._state_lock:
+                            self.state.mode = MotorMode.ForceMode
+
+                    # Compute PID output
+                    current_time = time.time()
+                    force_command = self.pid.compute(
+                        current_command.position_setpoint_um,
+                        stream_data.position,
+                        current_time
+                    )
+
+                    # Send force command to motor
+                    self.actuator.set_streamed_force_mN(int(force_command))
+
+                # Update state
+                with self._state_lock:
+                    self.state.position_um = stream_data.position
+                    self.state.force_mN = stream_data.force
+                    self.state.power_W = stream_data.power
+                    self.state.temperature_C = stream_data.temperature
+                    self.state.voltage_mV = stream_data.voltage
+                    self.state.errors = stream_data.errors
+                    self.state.control_mode = current_command.control_mode
+
+                # Call callback if registered
+                if self.state_update_callback:
+                    self.state_update_callback(self.get_state())
+
+            except Exception as e:
+                print(f"Error in control loop: {e}")
+
+            # Maintain update rate (if specified)
+            if self.update_period > 0:
+                elapsed = time.time() - loop_start
+                sleep_time = self.update_period - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+
+            # Report actual loop rate periodically
+            loop_count += 1
+            if time.time() - last_time >= rate_report_interval:
+                actual_rate = loop_count / (time.time() - last_time)
+                print(f"Control loop rate: {actual_rate:.1f} Hz")
+                loop_count = 0
+                last_time = time.time()
+
+        print("Control loop stopped")
