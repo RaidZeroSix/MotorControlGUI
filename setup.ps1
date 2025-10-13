@@ -30,6 +30,66 @@ try {
     exit 1
 }
 
+# Check for C++ Build Tools (required for pyorcasdk compilation)
+Write-Host ""
+Write-Host "Checking for C++ Build Tools..." -ForegroundColor Yellow
+$vsWhereAvailable = $false
+$buildToolsFound = $false
+
+# Try to find Visual Studio using vswhere
+$vsWherePath = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+if (Test-Path $vsWherePath) {
+    $vsWhereAvailable = $true
+    $vsInstalls = & $vsWherePath -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    if ($vsInstalls) {
+        $buildToolsFound = $true
+        Write-Host "Found Visual Studio C++ Build Tools" -ForegroundColor Green
+    }
+}
+
+# Alternative check: Look for cl.exe (C++ compiler) in PATH
+if (-not $buildToolsFound) {
+    try {
+        $clVersion = & cl.exe /? 2>&1 | Select-Object -First 1
+        if ($clVersion) {
+            $buildToolsFound = $true
+            Write-Host "Found C++ compiler (cl.exe)" -ForegroundColor Green
+        }
+    } catch {
+        # cl.exe not in PATH
+    }
+}
+
+if (-not $buildToolsFound) {
+    Write-Host ""
+    Write-Host "WARNING: C++ Build Tools not detected!" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "pyorcasdk requires C++ compilation. You have two options:" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Option 1 - Install Visual Studio Build Tools (RECOMMENDED):" -ForegroundColor Cyan
+    Write-Host "  1. Download from: https://visualstudio.microsoft.com/visual-cpp-build-tools/" -ForegroundColor White
+    Write-Host "  2. Run installer and select 'Desktop development with C++'" -ForegroundColor White
+    Write-Host "  3. Install (requires ~6-7 GB)" -ForegroundColor White
+    Write-Host "  4. Restart this terminal and run setup.ps1 again" -ForegroundColor White
+    Write-Host ""
+    Write-Host "Option 2 - Use Developer PowerShell:" -ForegroundColor Cyan
+    Write-Host "  If you already have Visual Studio installed:" -ForegroundColor White
+    Write-Host "  1. Launch 'Developer PowerShell for VS' from Start Menu" -ForegroundColor White
+    Write-Host "  2. Navigate to this directory" -ForegroundColor White
+    Write-Host "  3. Run setup.ps1 again" -ForegroundColor White
+    Write-Host ""
+
+    $continue = Read-Host "Continue anyway and attempt installation? (y/N)"
+    if ($continue -ne "y" -and $continue -ne "Y") {
+        Write-Host ""
+        Write-Host "Setup cancelled. Install build tools and run again." -ForegroundColor Yellow
+        pause
+        exit 0
+    }
+    Write-Host ""
+    Write-Host "Proceeding with installation (may fail)..." -ForegroundColor Yellow
+}
+
 # Get parent directory
 $parentDir = Split-Path -Parent (Get-Location)
 $pyorcaPath = Join-Path $parentDir "pyorcasdk"
