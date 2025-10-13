@@ -79,9 +79,27 @@ echo Will attempt to install from PyPI (may fail if not published)...
 REM Install remaining dependencies
 echo.
 echo Installing remaining dependencies...
-pip install nicegui control numpy plotly pyserial
-
+echo.
+echo NOTE: On Windows, some packages require Visual Studio Build Tools.
+echo If installation fails, visit: https://visualstudio.microsoft.com/visual-cpp-build-tools/
+echo.
+echo Installing core packages...
+pip install numpy scipy matplotlib control plotly pyserial
 if %errorlevel% neq 0 goto :install_failed
+
+echo.
+echo Installing NiceGUI dependencies...
+REM Install nicegui dependencies without watchfiles (we don't need auto-reload)
+pip install Pygments aiofiles aiohttp certifi docutils fastapi h11 httpx ifaddr itsdangerous jinja2 markdown2 orjson python-engineio python-multipart python-socketio starlette typing-extensions uvicorn
+if %errorlevel% neq 0 goto :install_failed
+
+echo.
+echo Installing NiceGUI...
+pip install --no-deps nicegui
+if %errorlevel% neq 0 goto :install_failed
+
+echo.
+echo NOTE: Watchfiles skipped (not needed - auto-reload is disabled)
 
 REM Success
 echo.
