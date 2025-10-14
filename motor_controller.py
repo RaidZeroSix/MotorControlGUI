@@ -403,12 +403,12 @@ class MotorController:
                             self.actuator.set_streamed_force_mN(0)
 
                         elif current_shock_state == ShockState.ACCELERATE:
-                            # Accelerate until switch position
+                            # Accelerate until switch position (negative direction)
                             accel_force_mN = self.shock_params.accel_force_N * 1000.0
                             self.actuator.set_streamed_force_mN(int(accel_force_mN))
 
-                            # Check if reached switch position
-                            if position_mm > self.shock_params.switch_position_mm:
+                            # Check if reached switch position (going negative)
+                            if position_mm < -self.shock_params.switch_position_mm:
                                 self.shock_state = ShockState.DECELERATE
                                 self.shock_first_crossing = False
                                 print(f"Shock: ACCELERATE → DECELERATE at {position_mm:.2f}mm")
@@ -418,15 +418,15 @@ class MotorController:
                             decel_force_mN = self.shock_params.decel_force_N * 1000.0
                             self.actuator.set_streamed_force_mN(int(decel_force_mN))
 
-                            # Track crossings of end_position
+                            # Track crossings of end_position (negative direction)
                             if not self.shock_first_crossing:
-                                # Waiting for first crossing (forward)
-                                if position_mm > self.shock_params.end_position_mm:
+                                # Waiting for first crossing (forward in negative direction)
+                                if position_mm < -self.shock_params.end_position_mm:
                                     self.shock_first_crossing = True
                                     print(f"Shock: First crossing at {position_mm:.2f}mm (forward)")
                             else:
-                                # Waiting for second crossing (backward)
-                                if position_mm < self.shock_params.end_position_mm:
+                                # Waiting for second crossing (backward toward zero)
+                                if position_mm > -self.shock_params.end_position_mm:
                                     self.shock_state = ShockState.STABILIZE
                                     self.shock_stabilize_position_um = stream_data.position
                                     print(f"Shock: Second crossing at {position_mm:.2f}mm (backward) → STABILIZE")
