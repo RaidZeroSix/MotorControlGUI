@@ -263,6 +263,14 @@ class MotorController:
         except Exception as e:
             print(f"Error during emergency stop: {e}")
 
+    def zero_position(self):
+        """Zero the motor position at current location"""
+        try:
+            self.actuator.zero_position()
+            print("Position zeroed")
+        except Exception as e:
+            print(f"Error zeroing position: {e}")
+
     def _control_loop(self):
         """Main control loop (runs in separate thread)"""
         print(f"Control loop started (target: {self.update_rate_hz if self.update_rate_hz > 0 else 'MAX'} Hz)")

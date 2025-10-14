@@ -180,6 +180,7 @@ class MotorGUI:
 
                 ui.separator().props('vertical')
 
+                ui.button('Zero Position', on_click=self._zero_position).props('color=primary flat')
                 ui.button('E-STOP', on_click=self._emergency_stop).props('color=red')
 
                 # Store button references for toggling visibility
@@ -357,6 +358,11 @@ class MotorGUI:
         """Emergency stop"""
         self.controller.emergency_stop()
         ui.notify('EMERGENCY STOP ACTIVATED', type='negative')
+
+    def _zero_position(self):
+        """Zero the position reference"""
+        self.controller.zero_position()
+        ui.notify('Position zeroed at current location', type='info')
 
     def _set_mode(self, mode_str: str):
         """Set control mode"""
