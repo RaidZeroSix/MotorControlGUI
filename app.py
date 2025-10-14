@@ -108,36 +108,6 @@ class MotorGUI:
             self.telemetry_labels['voltage'].text = f"{state.voltage_mV / 1000.0:.1f} V"
             self.telemetry_labels['errors'].text = f"0x{state.errors:04X}"
 
-        # Update charts (ECharts format: array of [x, y] pairs)
-        if self.position_chart and len(self.time_data) > 0:
-            current_time = time.time() - self.start_time
-            # Set rolling window: show last 5 seconds
-            time_min = max(0, current_time - self.plot_window_seconds)
-            time_max = current_time
-
-            self.position_chart.options['xAxis']['min'] = time_min
-            self.position_chart.options['xAxis']['max'] = time_max
-            self.position_chart.options['yAxis']['min'] = 0
-            self.position_chart.options['yAxis']['max'] = 80  # Adjust based on your motor's range
-            self.position_chart.options['series'][0]['data'] = [
-                [t, p] for t, p in zip(self.time_data, self.position_data)
-            ]
-            self.position_chart.update()
-
-        if self.force_chart and len(self.time_data) > 0:
-            current_time = time.time() - self.start_time
-            time_min = max(0, current_time - self.plot_window_seconds)
-            time_max = current_time
-
-            self.force_chart.options['xAxis']['min'] = time_min
-            self.force_chart.options['xAxis']['max'] = time_max
-            self.force_chart.options['yAxis']['min'] = -150
-            self.force_chart.options['yAxis']['max'] = 150  # ±150N range
-            self.force_chart.options['series'][0]['data'] = [
-                [t, f] for t, f in zip(self.time_data, self.force_data)
-            ]
-            self.force_chart.update()
-
     def create_ui(self):
         """Create the main UI"""
         ui.page_title('Pixels On Target')
@@ -261,38 +231,6 @@ class MotorGUI:
                     self._set_mode(mode)
 
                 mode_select.on_value_change(on_mode_change)
-
-        # Bottom row - Charts side by side
-        with ui.row().classes('w-full gap-2'):
-            with ui.card().classes('flex-1'):
-                ui.label('Position vs Time').classes('text-h6')
-                self.position_chart = ui.echart({
-                    'xAxis': {'type': 'value', 'name': 'Time (s)'},
-                    'yAxis': {'type': 'value', 'name': 'Position (mm)'},
-                    'series': [{
-                        'type': 'line',
-                        'name': 'Position',
-                        'data': [],
-                        'smooth': True
-                    }],
-                    'tooltip': {'trigger': 'axis'},
-                    'legend': {'data': ['Position']}
-                }).classes('w-full h-80')
-
-            with ui.card().classes('flex-1'):
-                ui.label('Force vs Time').classes('text-h6')
-                self.force_chart = ui.echart({
-                    'xAxis': {'type': 'value', 'name': 'Time (s)'},
-                    'yAxis': {'type': 'value', 'name': 'Force (N)'},
-                    'series': [{
-                        'type': 'line',
-                        'name': 'Force',
-                        'data': [],
-                        'smooth': True
-                    }],
-                    'tooltip': {'trigger': 'axis'},
-                    'legend': {'data': ['Force']}
-                }).classes('w-full h-80')
 
         # Start periodic UI update timer
         ui.timer(0.1, self._update_ui)
