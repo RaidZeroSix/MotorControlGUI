@@ -263,12 +263,14 @@ class MotorController:
         """Main control loop (runs in separate thread)"""
         print(f"Control loop started (target: {self.update_rate_hz if self.update_rate_hz > 0 else 'MAX'} Hz)")
 
-        last_time = time.time()
+        last_report_time = time.time()
         loop_count = 0
         rate_report_interval = 1.0  # Report actual rate every second
+        callback_decimation = 10  # Call callback every N iterations (~100Hz for UI updates)
 
         while not self._stop_flag.is_set():
-            loop_start = time.time()
+            current_time = time.time()  # Single time call per iteration
+            loop_start = current_time
 
             try:
                 # Run the actuator communication
@@ -277,23 +279,20 @@ class MotorController:
                 # Read current state from motor (using stream data for efficiency)
                 stream_data = self.actuator.get_stream_data()
 
-                # Get current command
-                with self._command_lock:
-                    current_command = MotorCommand(
-                        control_mode=self.command.control_mode,
-                        force_setpoint_mN=self.command.force_setpoint_mN,
-                        position_setpoint_um=self.command.position_setpoint_um
-                    )
+                # Get current command (read-only, fast)
+                control_mode = self.command.control_mode
+                force_setpoint = self.command.force_setpoint_mN
+                position_setpoint = self.command.position_setpoint_um
 
                 # Execute control logic based on mode
-                if current_command.control_mode == ControlMode.SLEEP:
+                if control_mode == ControlMode.SLEEP:
                     # Sleep mode - no force output
                     if self.state.mode != MotorMode.SleepMode:
                         self.actuator.set_mode(MotorMode.SleepMode)
                         with self._state_lock:
                             self.state.mode = MotorMode.SleepMode
 
-                elif current_command.control_mode == ControlMode.FORCE_DIRECT:
+                elif control_mode == ControlMode.FORCE_DIRECT:
                     # Direct force control
                     if self.state.mode != MotorMode.ForceMode:
                         self.actuator.set_mode(MotorMode.ForceMode)
@@ -301,19 +300,18 @@ class MotorController:
                             self.state.mode = MotorMode.ForceMode
 
                     # Set the commanded force
-                    self.actuator.set_streamed_force_mN(int(current_command.force_setpoint_mN))
+                    self.actuator.set_streamed_force_mN(int(force_setpoint))
 
-                elif current_command.control_mode == ControlMode.POSITION:
+                elif control_mode == ControlMode.POSITION:
                     # Position control using PID
                     if self.state.mode != MotorMode.ForceMode:
                         self.actuator.set_mode(MotorMode.ForceMode)
                         with self._state_lock:
                             self.state.mode = MotorMode.ForceMode
 
-                    # Compute PID output
-                    current_time = time.time()
+                    # Compute PID output (reuse current_time)
                     force_command = self.pid.compute(
-                        current_command.position_setpoint_um,
+                        position_setpoint,
                         stream_data.position,
                         current_time
                     )
@@ -321,7 +319,7 @@ class MotorController:
                     # Send force command to motor
                     self.actuator.set_streamed_force_mN(int(force_command))
 
-                # Update state
+                # Update state (fast, no copy)
                 with self._state_lock:
                     self.state.position_um = stream_data.position
                     self.state.force_mN = stream_data.force
@@ -329,11 +327,25 @@ class MotorController:
                     self.state.temperature_C = stream_data.temperature
                     self.state.voltage_mV = stream_data.voltage
                     self.state.errors = stream_data.errors
-                    self.state.control_mode = current_command.control_mode
+                    self.state.control_mode = control_mode
 
-                # Call callback if registered
-                if self.state_update_callback:
-                    self.state_update_callback(self.get_state())
+                # Call callback only every N iterations (decimation for UI updates)
+                loop_count += 1
+                if self.state_update_callback and (loop_count % callback_decimation == 0):
+                    # Create state copy only when needed for callback
+                    state_copy = MotorState(
+                        position_um=stream_data.position,
+                        force_mN=stream_data.force,
+                        power_W=stream_data.power,
+                        temperature_C=stream_data.temperature,
+                        voltage_mV=stream_data.voltage,
+                        errors=stream_data.errors,
+                        mode=self.state.mode,
+                        control_mode=control_mode,
+                        connected=self.state.connected,
+                        running=self.state.running
+                    )
+                    self.state_update_callback(state_copy)
 
             except Exception as e:
                 print(f"Error in control loop: {e}")
@@ -345,12 +357,13 @@ class MotorController:
                 if sleep_time > 0:
                     time.sleep(sleep_time)
 
-            # Report actual loop rate periodically
-            loop_count += 1
-            if time.time() - last_time >= rate_report_interval:
-                actual_rate = loop_count / (time.time() - last_time)
-                print(f"Control loop rate: {actual_rate:.1f} Hz")
-                loop_count = 0
-                last_time = time.time()
+            # Report actual loop rate periodically (check every 1000 iterations to reduce overhead)
+            if loop_count % 1000 == 0:
+                current_time = time.time()
+                if current_time - last_report_time >= rate_report_interval:
+                    actual_rate = loop_count / (current_time - last_report_time)
+                    print(f"Control loop rate: {actual_rate:.1f} Hz")
+                    loop_count = 0
+                    last_report_time = current_time
 
         print("Control loop stopped")
