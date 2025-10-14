@@ -48,8 +48,9 @@ class MotorGUI:
         # UI state
         self.connected = False
 
-        # Data for plotting
-        self.max_plot_points = 200
+        # Data for plotting (5 seconds at ~100Hz = 500 points)
+        self.plot_window_seconds = 5.0
+        self.max_plot_points = 500
         self.time_data = deque(maxlen=self.max_plot_points)
         self.position_data = deque(maxlen=self.max_plot_points)
         self.force_data = deque(maxlen=self.max_plot_points)
@@ -109,12 +110,29 @@ class MotorGUI:
 
         # Update charts (ECharts format: array of [x, y] pairs)
         if self.position_chart and len(self.time_data) > 0:
+            current_time = time.time() - self.start_time
+            # Set rolling window: show last 5 seconds
+            time_min = max(0, current_time - self.plot_window_seconds)
+            time_max = current_time
+
+            self.position_chart.options['xAxis']['min'] = time_min
+            self.position_chart.options['xAxis']['max'] = time_max
+            self.position_chart.options['yAxis']['min'] = 0
+            self.position_chart.options['yAxis']['max'] = 80  # Adjust based on your motor's range
             self.position_chart.options['series'][0]['data'] = [
                 [t, p] for t, p in zip(self.time_data, self.position_data)
             ]
             self.position_chart.update()
 
         if self.force_chart and len(self.time_data) > 0:
+            current_time = time.time() - self.start_time
+            time_min = max(0, current_time - self.plot_window_seconds)
+            time_max = current_time
+
+            self.force_chart.options['xAxis']['min'] = time_min
+            self.force_chart.options['xAxis']['max'] = time_max
+            self.force_chart.options['yAxis']['min'] = -150
+            self.force_chart.options['yAxis']['max'] = 150  # ±150N range
             self.force_chart.options['series'][0]['data'] = [
                 [t, f] for t, f in zip(self.time_data, self.force_data)
             ]
@@ -220,8 +238,16 @@ class MotorGUI:
                     kp_input = ui.number('Kp', value=0.1, step=0.01, format='%.3f').style('width: 90px')
                     ki_input = ui.number('Ki', value=0.01, step=0.001, format='%.4f').style('width: 90px')
                     kd_input = ui.number('Kd', value=0.005, step=0.001, format='%.4f').style('width: 90px')
-                    ui.button('Update', on_click=lambda: self._update_pid(
-                        kp_input.value, ki_input.value, kd_input.value
+
+                    ui.separator().props('vertical')
+
+                    ui.label('Limits:').classes('text-sm')
+                    max_force_input = ui.number('Max (N)', value=30, step=10, format='%.0f').style('width: 90px')
+                    min_force_input = ui.number('Min (N)', value=-30, step=10, format='%.0f').style('width: 90px')
+
+                    ui.button('Update', on_click=lambda: self._update_pid_and_limits(
+                        kp_input.value, ki_input.value, kd_input.value,
+                        max_force_input.value, min_force_input.value
                     )).props('flat dense')
                 pid_row.visible = False  # Hidden by default (Sleep mode)
 
@@ -359,3 +385,10 @@ class MotorGUI:
         """Update PID parameters"""
         self.controller.update_pid_parameters(kp=kp, ki=ki, kd=kd)
         ui.notify(f'PID updated: Kp={kp:.3f}, Ki={ki:.4f}, Kd={kd:.4f}', type='info')
+
+    def _update_pid_and_limits(self, kp: float, ki: float, kd: float, max_force_n: float, min_force_n: float):
+        """Update PID parameters and force limits"""
+        max_force_mN = max_force_n * 1000.0
+        min_force_mN = min_force_n * 1000.0
+        self.controller.update_pid_parameters(kp=kp, ki=ki, kd=kd, max_output=max_force_mN, min_output=min_force_mN)
+        ui.notify(f'PID updated: Kp={kp:.3f}, Ki={ki:.4f}, Kd={kd:.4f} | Limits: [{min_force_n:.0f}, {max_force_n:.0f}] N', type='info')

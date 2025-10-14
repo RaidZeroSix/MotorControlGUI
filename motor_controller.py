@@ -218,7 +218,9 @@ class MotorController:
 
     def update_pid_parameters(self, kp: Optional[float] = None,
                              ki: Optional[float] = None,
-                             kd: Optional[float] = None):
+                             kd: Optional[float] = None,
+                             max_output: Optional[float] = None,
+                             min_output: Optional[float] = None):
         """
         Update PID controller parameters.
 
@@ -226,8 +228,10 @@ class MotorController:
             kp: Proportional gain
             ki: Integral gain
             kd: Derivative gain
+            max_output: Maximum force output in mN
+            min_output: Minimum force output in mN
         """
-        self.pid.update_parameters(kp=kp, ki=ki, kd=kd)
+        self.pid.update_parameters(kp=kp, ki=ki, kd=kd, max_output=max_output, min_output=min_output)
 
     def get_state(self) -> MotorState:
         """
