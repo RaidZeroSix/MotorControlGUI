@@ -65,6 +65,7 @@ class MotorGUI:
         self.force_chart = None
         self.connect_btn = None
         self.disconnect_btn = None
+        self.shock_state_label: Optional[ui.label] = None
 
         # Register callback for motor state updates
         self.controller.state_update_callback = self._on_state_update
@@ -107,6 +108,10 @@ class MotorGUI:
             self.telemetry_labels['temp'].text = f"{state.temperature_C} °C"
             self.telemetry_labels['voltage'].text = f"{state.voltage_mV / 1000.0:.1f} V"
             self.telemetry_labels['errors'].text = f"0x{state.errors:04X}"
+
+        # Update shock profile state
+        if self.shock_state_label:
+            self.shock_state_label.text = f"State: {state.shock_state.value.upper()}"
 
     def create_ui(self):
         """Create the main UI"""
@@ -186,7 +191,7 @@ class MotorGUI:
             with ui.row().classes('w-full items-center gap-4').style('min-height: 60px'):
                 # Mode selection
                 mode_select = ui.select(
-                    ['Sleep', 'Force Direct', 'Position'],
+                    ['Sleep', 'Force Direct', 'Position', 'Shock Profile'],
                     value='Sleep',
                     label='Mode'
                 ).style('width: 150px')
@@ -222,12 +227,36 @@ class MotorGUI:
                     )).props('flat dense')
                 pid_row.visible = False  # Hidden by default (Sleep mode)
 
+                # Shock profile control (conditionally visible)
+                with ui.row().classes('items-center gap-2') as shock_row:
+                    accel_force_input = ui.number('Accel Force (N)', value=150.0, step=10, format='%.0f').style('width: 120px')
+                    decel_force_input = ui.number('Decel Force (N)', value=-180.0, step=10, format='%.0f').style('width: 120px')
+                    switch_pos_input = ui.number('Switch (mm)', value=60.0, step=1, format='%.1f').style('width: 100px')
+                    end_pos_input = ui.number('End (mm)', value=100.0, step=1, format='%.1f').style('width: 100px')
+
+                    ui.separator().props('vertical')
+
+                    shock_state_label = ui.label('State: IDLE').classes('text-sm font-bold')
+
+                    ui.button('Start', on_click=lambda: self._start_shock_profile(
+                        accel_force_input.value, decel_force_input.value,
+                        switch_pos_input.value, end_pos_input.value
+                    )).props('color=green flat dense')
+
+                    ui.button('Abort', on_click=self._abort_shock_profile).props('color=red flat dense')
+
+                shock_row.visible = False  # Hidden by default (Sleep mode)
+
+                # Store reference to shock state label for updates
+                self.shock_state_label = shock_state_label
+
                 # Update visibility when mode changes
                 def on_mode_change(e):
                     mode = e.value
                     force_row.visible = (mode == 'Force Direct')
                     position_row.visible = (mode == 'Position')
                     pid_row.visible = (mode == 'Position')
+                    shock_row.visible = (mode == 'Shock Profile')
                     self._set_mode(mode)
 
                 mode_select.on_value_change(on_mode_change)
@@ -307,7 +336,8 @@ class MotorGUI:
         mode_map = {
             'Sleep': ControlMode.SLEEP,
             'Force Direct': ControlMode.FORCE_DIRECT,
-            'Position': ControlMode.POSITION
+            'Position': ControlMode.POSITION,
+            'Shock Profile': ControlMode.SHOCK_PROFILE
         }
         mode = mode_map.get(mode_str, ControlMode.SLEEP)
         self.controller.set_control_mode(mode)
@@ -336,3 +366,18 @@ class MotorGUI:
         min_force_mN = min_force_n * 1000.0
         self.controller.update_pid_parameters(kp=kp, ki=ki, kd=kd, max_output=max_force_mN, min_output=min_force_mN)
         ui.notify(f'PID updated: Kp={kp:.3f}, Ki={ki:.4f}, Kd={kd:.4f} | Limits: [{min_force_n:.0f}, {max_force_n:.0f}] N', type='info')
+
+    def _start_shock_profile(self, accel_force_n: float, decel_force_n: float, switch_pos_mm: float, end_pos_mm: float):
+        """Start shock profile execution with given parameters"""
+        # Update parameters
+        self.controller.set_shock_profile_parameters(
+            accel_force_n, decel_force_n, switch_pos_mm, end_pos_mm
+        )
+        # Start execution
+        self.controller.start_shock_profile()
+        ui.notify(f'Shock profile started: Accel={accel_force_n:.0f}N, Decel={decel_force_n:.0f}N', type='positive')
+
+    def _abort_shock_profile(self):
+        """Abort shock profile execution"""
+        self.controller.abort_shock_profile()
+        ui.notify('Shock profile aborted', type='warning')

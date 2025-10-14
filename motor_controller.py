@@ -20,6 +20,15 @@ class ControlMode(Enum):
     SLEEP = "sleep"
     FORCE_DIRECT = "force_direct"  # Direct force control
     POSITION = "position"  # Position control using PID
+    SHOCK_PROFILE = "shock_profile"  # Shock profile state machine
+
+
+class ShockState(Enum):
+    """States for shock profile execution"""
+    IDLE = "idle"
+    ACCELERATE = "accelerate"
+    DECELERATE = "decelerate"
+    STABILIZE = "stabilize"
 
 
 @dataclass
@@ -35,6 +44,7 @@ class MotorState:
     control_mode: ControlMode = ControlMode.SLEEP
     connected: bool = False
     running: bool = False
+    shock_state: ShockState = ShockState.IDLE
 
 
 @dataclass
@@ -43,6 +53,15 @@ class MotorCommand:
     control_mode: ControlMode = ControlMode.SLEEP
     force_setpoint_mN: float = 0.0
     position_setpoint_um: float = 0.0
+
+
+@dataclass
+class ShockProfileParameters:
+    """Parameters for shock profile execution"""
+    accel_force_N: float = 150.0  # Acceleration force in Newtons
+    decel_force_N: float = -180.0  # Deceleration/reverse force in Newtons
+    switch_position_mm: float = 60.0  # Position to switch from accel to decel
+    end_position_mm: float = 100.0  # Bidirectional crossing threshold
 
 
 class MotorController:
@@ -79,9 +98,16 @@ class MotorController:
         self.state = MotorState()
         self.command = MotorCommand()
 
+        # Shock profile parameters and state
+        self.shock_params = ShockProfileParameters()
+        self.shock_state = ShockState.IDLE
+        self.shock_first_crossing = False
+        self.shock_stabilize_position_um = 0
+
         # Thread safety
         self._state_lock = threading.Lock()
         self._command_lock = threading.Lock()
+        self._shock_lock = threading.Lock()
 
         # Control loop thread
         self._control_thread: Optional[threading.Thread] = None
@@ -252,7 +278,8 @@ class MotorController:
                 mode=self.state.mode,
                 control_mode=self.state.control_mode,
                 connected=self.state.connected,
-                running=self.state.running
+                running=self.state.running,
+                shock_state=self.shock_state
             )
 
     def emergency_stop(self):
@@ -270,6 +297,32 @@ class MotorController:
             print("Position zeroed")
         except Exception as e:
             print(f"Error zeroing position: {e}")
+
+    def set_shock_profile_parameters(self, accel_force_N: float, decel_force_N: float,
+                                     switch_position_mm: float, end_position_mm: float):
+        """Set shock profile parameters"""
+        with self._shock_lock:
+            self.shock_params.accel_force_N = accel_force_N
+            self.shock_params.decel_force_N = decel_force_N
+            self.shock_params.switch_position_mm = switch_position_mm
+            self.shock_params.end_position_mm = end_position_mm
+
+    def start_shock_profile(self):
+        """Start shock profile execution"""
+        with self._shock_lock:
+            if self.shock_state == ShockState.IDLE:
+                self.shock_state = ShockState.ACCELERATE
+                self.shock_first_crossing = False
+                print("Shock profile started")
+            else:
+                print(f"Cannot start shock profile - current state: {self.shock_state}")
+
+    def abort_shock_profile(self):
+        """Abort shock profile execution"""
+        with self._shock_lock:
+            self.shock_state = ShockState.IDLE
+            self.shock_first_crossing = False
+            print("Shock profile aborted")
 
     def _control_loop(self):
         """Main control loop (runs in separate thread)"""
@@ -330,6 +383,62 @@ class MotorController:
 
                     # Send force command to motor
                     self.actuator.set_streamed_force_mN(int(force_command))
+
+                elif control_mode == ControlMode.SHOCK_PROFILE:
+                    # Shock profile state machine
+                    if self.state.mode != MotorMode.ForceMode:
+                        self.actuator.set_mode(MotorMode.ForceMode)
+                        with self._state_lock:
+                            self.state.mode = MotorMode.ForceMode
+
+                    # Get current position in mm
+                    position_mm = stream_data.position / 1000.0
+
+                    # Execute shock state machine
+                    with self._shock_lock:
+                        current_shock_state = self.shock_state
+
+                        if current_shock_state == ShockState.IDLE:
+                            # Waiting - apply no force
+                            self.actuator.set_streamed_force_mN(0)
+
+                        elif current_shock_state == ShockState.ACCELERATE:
+                            # Accelerate until switch position
+                            accel_force_mN = self.shock_params.accel_force_N * 1000.0
+                            self.actuator.set_streamed_force_mN(int(accel_force_mN))
+
+                            # Check if reached switch position
+                            if position_mm > self.shock_params.switch_position_mm:
+                                self.shock_state = ShockState.DECELERATE
+                                self.shock_first_crossing = False
+                                print(f"Shock: ACCELERATE → DECELERATE at {position_mm:.2f}mm")
+
+                        elif current_shock_state == ShockState.DECELERATE:
+                            # Decelerate/reverse - track crossings
+                            decel_force_mN = self.shock_params.decel_force_N * 1000.0
+                            self.actuator.set_streamed_force_mN(int(decel_force_mN))
+
+                            # Track crossings of end_position
+                            if not self.shock_first_crossing:
+                                # Waiting for first crossing (forward)
+                                if position_mm > self.shock_params.end_position_mm:
+                                    self.shock_first_crossing = True
+                                    print(f"Shock: First crossing at {position_mm:.2f}mm (forward)")
+                            else:
+                                # Waiting for second crossing (backward)
+                                if position_mm < self.shock_params.end_position_mm:
+                                    self.shock_state = ShockState.STABILIZE
+                                    self.shock_stabilize_position_um = stream_data.position
+                                    print(f"Shock: Second crossing at {position_mm:.2f}mm (backward) → STABILIZE")
+
+                        elif current_shock_state == ShockState.STABILIZE:
+                            # Switch to position control at stabilize position
+                            force_command = self.pid.compute(
+                                self.shock_stabilize_position_um,
+                                stream_data.position,
+                                current_time
+                            )
+                            self.actuator.set_streamed_force_mN(int(force_command))
 
                 # Update state (fast, no copy)
                 with self._state_lock:
