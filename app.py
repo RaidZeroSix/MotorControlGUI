@@ -62,6 +62,8 @@ class MotorGUI:
         self.telemetry_labels: dict = {}
         self.position_chart = None
         self.force_chart = None
+        self.connect_btn = None
+        self.disconnect_btn = None
 
         # Register callback for motor state updates
         self.controller.state_update_callback = self._on_state_update
@@ -150,16 +152,21 @@ class MotorGUI:
 
                 baud_input = ui.number('Baud Rate', value=1000000, format='%d').style('width: 120px')
 
-                ui.button('Connect', on_click=lambda: self._connect(
+                # Connect/Disconnect buttons (mutually exclusive)
+                connect_btn = ui.button('Connect', on_click=lambda: self._connect(
                     port_select.value, int(baud_input.value)
                 )).props('color=green')
-                ui.button('Disconnect', on_click=self._disconnect).props('color=red')
+
+                disconnect_btn = ui.button('Disconnect', on_click=self._disconnect).props('color=red')
+                disconnect_btn.visible = False  # Hidden until connected
 
                 ui.separator().props('vertical')
 
-                ui.button('Start Loop', on_click=self._start_control).props('color=primary')
-                ui.button('Stop Loop', on_click=self._stop_control).props('color=orange')
                 ui.button('E-STOP', on_click=self._emergency_stop).props('color=red')
+
+                # Store button references for toggling visibility
+                self.connect_btn = connect_btn
+                self.disconnect_btn = disconnect_btn
 
         # Second row - Telemetry
         with ui.card().classes('w-full'):
@@ -281,7 +288,7 @@ class MotorGUI:
         port_select.update()
 
     def _connect(self, port: str, baud_rate: int):
-        """Connect to motor"""
+        """Connect to motor and start control loop"""
         if not port:
             ui.notify('Please select a serial port', type='warning')
             return
@@ -289,26 +296,36 @@ class MotorGUI:
         if self.controller.connect(port, baud_rate):
             ui.notify(f'Connected to {port}', type='positive')
             self.connected = True
+
+            # Toggle button visibility
+            if self.connect_btn:
+                self.connect_btn.visible = False
+            if self.disconnect_btn:
+                self.disconnect_btn.visible = True
+
+            # Auto-start control loop
+            if self.controller.start_control_loop():
+                ui.notify('Control loop started', type='info')
+            else:
+                ui.notify('Failed to start control loop', type='negative')
         else:
             ui.notify('Connection failed', type='negative')
 
     def _disconnect(self):
-        """Disconnect from motor"""
+        """Stop control loop and disconnect from motor"""
+        # Stop control loop first
+        self.controller.stop_control_loop()
+
+        # Then disconnect
         self.controller.disconnect()
         ui.notify('Disconnected', type='info')
         self.connected = False
 
-    def _start_control(self):
-        """Start control loop"""
-        if self.controller.start_control_loop():
-            ui.notify('Control loop started', type='positive')
-        else:
-            ui.notify('Failed to start control loop', type='negative')
-
-    def _stop_control(self):
-        """Stop control loop"""
-        self.controller.stop_control_loop()
-        ui.notify('Control loop stopped', type='warning')
+        # Toggle button visibility
+        if self.connect_btn:
+            self.connect_btn.visible = True
+        if self.disconnect_btn:
+            self.disconnect_btn.visible = False
 
     def _emergency_stop(self):
         """Emergency stop"""
