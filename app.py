@@ -126,132 +126,129 @@ class MotorGUI:
             ui.label('Orca Motor Control').classes('text-h4')
             self.status_label = ui.label('Status: Disconnected').classes('text-red-600')
 
-        with ui.row().classes('w-full'):
-            # Left column - Controls
-            with ui.column().classes('w-1/3'):
-                # Connection panel
-                with ui.card().classes('w-full'):
-                    ui.label('Connection').classes('text-h6')
+        # Top row - Connection and control
+        with ui.card().classes('w-full'):
+            ui.label('Connection & Control').classes('text-h6')
 
-                    # Scan for available ports
-                    available_ports = get_available_ports()
+            with ui.row().classes('w-full items-end gap-4'):
+                # Scan for available ports
+                available_ports = get_available_ports()
+                if available_ports:
+                    port_options = {device: desc for device, desc in available_ports}
+                    default_port = available_ports[0][0]
+                else:
+                    port_options = {'': 'No ports found'}
+                    default_port = ''
 
-                    if available_ports:
-                        # Create options dict for select widget: {device: description}
-                        port_options = {device: desc for device, desc in available_ports}
-                        default_port = available_ports[0][0]  # First port device
-                    else:
-                        port_options = {'': 'No ports found'}
-                        default_port = ''
+                port_select = ui.select(
+                    options=port_options,
+                    value=default_port,
+                    label='Serial Port'
+                ).style('min-width: 300px')
 
-                    port_select = ui.select(
-                        options=port_options,
-                        value=default_port,
-                        label='Serial Port'
-                    ).classes('w-full')
+                ui.button('', icon='refresh', on_click=lambda: self._refresh_ports(port_select)).props('flat')
 
-                    with ui.row().classes('w-full'):
-                        ui.button('Refresh Ports', on_click=lambda: self._refresh_ports(port_select)).props('icon=refresh size=sm')
+                baud_input = ui.number('Baud Rate', value=1000000, format='%d').style('width: 120px')
 
-                    baud_input = ui.number('Baud Rate', value=1000000, format='%d').classes('w-full')
+                ui.button('Connect', on_click=lambda: self._connect(
+                    port_select.value, int(baud_input.value)
+                )).props('color=green')
+                ui.button('Disconnect', on_click=self._disconnect).props('color=red')
 
-                    with ui.row():
-                        ui.button('Connect', on_click=lambda: self._connect(
-                            port_select.value, int(baud_input.value)
-                        )).props('color=green')
-                        ui.button('Disconnect', on_click=self._disconnect).props('color=red')
+                ui.separator().props('vertical')
 
-                    ui.button('Start Control Loop', on_click=self._start_control).props('color=primary')
-                    ui.button('Stop Control Loop', on_click=self._stop_control).props('color=orange')
-                    ui.button('EMERGENCY STOP', on_click=self._emergency_stop).props('color=red size=lg')
+                ui.button('Start Loop', on_click=self._start_control).props('color=primary')
+                ui.button('Stop Loop', on_click=self._stop_control).props('color=orange')
+                ui.button('E-STOP', on_click=self._emergency_stop).props('color=red')
 
-                # Mode control panel
-                with ui.card().classes('w-full'):
-                    ui.label('Control Mode').classes('text-h6')
+        # Second row - Telemetry
+        with ui.card().classes('w-full'):
+            ui.label('Telemetry').classes('text-h6')
+            with ui.row().classes('w-full items-center gap-8'):
+                with ui.row().classes('items-center gap-2'):
+                    ui.label('Position:').classes('font-bold')
+                    self.position_label = ui.label('-- mm').classes('text-lg')
+                with ui.row().classes('items-center gap-2'):
+                    ui.label('Force:').classes('font-bold')
+                    self.force_label = ui.label('-- N').classes('text-lg')
+                with ui.row().classes('items-center gap-2'):
+                    ui.label('Power:').classes('font-bold')
+                    self.telemetry_labels['power'] = ui.label('-- W')
+                with ui.row().classes('items-center gap-2'):
+                    ui.label('Temp:').classes('font-bold')
+                    self.telemetry_labels['temp'] = ui.label('-- °C')
+                with ui.row().classes('items-center gap-2'):
+                    ui.label('Voltage:').classes('font-bold')
+                    self.telemetry_labels['voltage'] = ui.label('-- V')
+                with ui.row().classes('items-center gap-2'):
+                    ui.label('Errors:').classes('font-bold')
+                    self.telemetry_labels['errors'] = ui.label('0x0000')
 
-                    mode_select = ui.select(
-                        ['Sleep', 'Force Direct', 'Position'],
-                        value='Sleep',
-                        label='Mode'
-                    ).classes('w-full')
-                    mode_select.on_value_change(lambda e: self._set_mode(e.value))
+        # Third row - Control setpoints
+        with ui.card().classes('w-full'):
+            ui.label('Control Setpoints').classes('text-h6')
+            with ui.row().classes('w-full items-end gap-6'):
+                # Mode selection
+                mode_select = ui.select(
+                    ['Sleep', 'Force Direct', 'Position'],
+                    value='Sleep',
+                    label='Mode'
+                ).style('width: 140px')
+                mode_select.on_value_change(lambda e: self._set_mode(e.value))
 
-                # Force control panel
-                with ui.card().classes('w-full'):
-                    ui.label('Force Control').classes('text-h6')
-                    force_input = ui.number('Force (N)', value=0.0, step=0.1, format='%.2f')
-                    ui.button('Set Force', on_click=lambda: self._set_force(force_input.value))
+                ui.separator().props('vertical')
 
-                # Position control panel
-                with ui.card().classes('w-full'):
-                    ui.label('Position Control').classes('text-h6')
-                    position_input = ui.number('Position (mm)', value=35.0, step=0.1, format='%.2f')
-                    ui.button('Set Position', on_click=lambda: self._set_position(position_input.value))
+                # Force control
+                force_input = ui.number('Force (N)', value=0.0, step=0.1, format='%.2f').style('width: 120px')
+                ui.button('Set Force', on_click=lambda: self._set_force(force_input.value)).props('size=sm')
 
-                # PID tuning panel
-                with ui.card().classes('w-full'):
-                    ui.label('PID Tuning').classes('text-h6')
-                    kp_input = ui.number('Kp', value=0.1, step=0.01, format='%.3f')
-                    ki_input = ui.number('Ki', value=0.01, step=0.001, format='%.4f')
-                    kd_input = ui.number('Kd', value=0.005, step=0.001, format='%.4f')
-                    ui.button('Update PID', on_click=lambda: self._update_pid(
-                        kp_input.value, ki_input.value, kd_input.value
-                    ))
+                ui.separator().props('vertical')
 
-            # Right column - Telemetry and plots
-            with ui.column().classes('w-2/3'):
-                # Current values
-                with ui.card().classes('w-full'):
-                    ui.label('Current Values').classes('text-h6')
-                    with ui.row().classes('w-full'):
-                        with ui.column().classes('w-1/2'):
-                            self.position_label = ui.label('Position: -- mm').classes('text-lg')
-                            self.force_label = ui.label('Force: -- N').classes('text-lg')
-                        with ui.column().classes('w-1/2'):
-                            with ui.row():
-                                ui.label('Power:').classes('font-bold')
-                                self.telemetry_labels['power'] = ui.label('-- W')
-                            with ui.row():
-                                ui.label('Temperature:').classes('font-bold')
-                                self.telemetry_labels['temp'] = ui.label('-- °C')
-                            with ui.row():
-                                ui.label('Voltage:').classes('font-bold')
-                                self.telemetry_labels['voltage'] = ui.label('-- V')
-                            with ui.row():
-                                ui.label('Errors:').classes('font-bold')
-                                self.telemetry_labels['errors'] = ui.label('0x0000')
+                # Position control
+                position_input = ui.number('Position (mm)', value=35.0, step=0.1, format='%.2f').style('width: 120px')
+                ui.button('Set Position', on_click=lambda: self._set_position(position_input.value)).props('size=sm')
 
-                # Position plot
-                with ui.card().classes('w-full'):
-                    ui.label('Position vs Time').classes('text-h6')
-                    self.position_chart = ui.echart({
-                        'xAxis': {'type': 'value', 'name': 'Time (s)'},
-                        'yAxis': {'type': 'value', 'name': 'Position (mm)'},
-                        'series': [{
-                            'type': 'line',
-                            'name': 'Position',
-                            'data': [],
-                            'smooth': True
-                        }],
-                        'tooltip': {'trigger': 'axis'},
-                        'legend': {'data': ['Position']}
-                    }).classes('w-full h-64')
+                ui.separator().props('vertical')
 
-                # Force plot
-                with ui.card().classes('w-full'):
-                    ui.label('Force vs Time').classes('text-h6')
-                    self.force_chart = ui.echart({
-                        'xAxis': {'type': 'value', 'name': 'Time (s)'},
-                        'yAxis': {'type': 'value', 'name': 'Force (N)'},
-                        'series': [{
-                            'type': 'line',
-                            'name': 'Force',
-                            'data': [],
-                            'smooth': True
-                        }],
-                        'tooltip': {'trigger': 'axis'},
-                        'legend': {'data': ['Force']}
-                    }).classes('w-full h-64')
+                # PID tuning
+                kp_input = ui.number('Kp', value=0.1, step=0.01, format='%.3f').style('width: 100px')
+                ki_input = ui.number('Ki', value=0.01, step=0.001, format='%.4f').style('width: 100px')
+                kd_input = ui.number('Kd', value=0.005, step=0.001, format='%.4f').style('width: 100px')
+                ui.button('Update PID', on_click=lambda: self._update_pid(
+                    kp_input.value, ki_input.value, kd_input.value
+                )).props('size=sm')
+
+        # Bottom row - Charts side by side
+        with ui.row().classes('w-full gap-4'):
+            with ui.card().classes('w-1/2'):
+                ui.label('Position vs Time').classes('text-h6')
+                self.position_chart = ui.echart({
+                    'xAxis': {'type': 'value', 'name': 'Time (s)'},
+                    'yAxis': {'type': 'value', 'name': 'Position (mm)'},
+                    'series': [{
+                        'type': 'line',
+                        'name': 'Position',
+                        'data': [],
+                        'smooth': True
+                    }],
+                    'tooltip': {'trigger': 'axis'},
+                    'legend': {'data': ['Position']}
+                }).classes('w-full h-80')
+
+            with ui.card().classes('w-1/2'):
+                ui.label('Force vs Time').classes('text-h6')
+                self.force_chart = ui.echart({
+                    'xAxis': {'type': 'value', 'name': 'Time (s)'},
+                    'yAxis': {'type': 'value', 'name': 'Force (N)'},
+                    'series': [{
+                        'type': 'line',
+                        'name': 'Force',
+                        'data': [],
+                        'smooth': True
+                    }],
+                    'tooltip': {'trigger': 'axis'},
+                    'legend': {'data': ['Force']}
+                }).classes('w-full h-80')
 
         # Start periodic UI update timer
         ui.timer(0.1, self._update_ui)
