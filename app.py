@@ -120,10 +120,10 @@ class MotorGUI:
 
     def create_ui(self):
         """Create the main UI"""
-        ui.page_title('Orca Motor Control')
+        ui.page_title('Pixels On Target')
 
         with ui.header().classes('items-center justify-between'):
-            ui.label('Orca Motor Control').classes('text-h4')
+            ui.label('Pixels On Target').classes('text-h4')
             self.status_label = ui.label('Status: Disconnected').classes('text-red-600')
 
         # Top row - Connection and control

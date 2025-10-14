@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Main entry point for the Orca Motor Control GUI
+Main entry point for the Pixels On Target Motor Control GUI
 
 Launch the NiceGUI-based motor control application.
 """
@@ -21,12 +21,12 @@ def index():
 
 def main():
     """Main entry point"""
-    print("Starting Orca Motor Control GUI...")
+    print("Starting Pixels On Target Motor Control GUI...")
 
     try:
         # Run in browser mode (accessible at http://localhost:8080)
         ui.run(
-            title='Orca Motor Control',
+            title='Pixels On Target',
             port=8080,
             reload=False,
             show=True  # Automatically open browser
