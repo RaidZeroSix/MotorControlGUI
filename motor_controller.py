@@ -7,9 +7,12 @@ Uses Force Mode and Sleep Mode only, with custom PID position control.
 
 import threading
 import time
+import json
+import os
 from typing import Optional, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from enum import Enum
+from pathlib import Path
 
 from pyorcasdk import Actuator, MotorMode, OrcaError
 from pid_controller import PIDController, PIDParameters
@@ -29,6 +32,8 @@ class ShockState(Enum):
     ACCELERATE = "accelerate"
     DECELERATE = "decelerate"
     STABILIZE = "stabilize"
+    WAIT = "wait"
+    HOMING = "homing"
 
 
 @dataclass
@@ -58,10 +63,14 @@ class MotorCommand:
 @dataclass
 class ShockProfileParameters:
     """Parameters for shock profile execution"""
+    name: str = "Default Profile"
     accel_force_N: float = 150.0  # Acceleration force in Newtons
     decel_force_N: float = -180.0  # Deceleration/reverse force in Newtons
     switch_position_mm: float = 60.0  # Position to switch from accel to decel
     end_position_mm: float = 100.0  # Bidirectional crossing threshold
+    repetitions: int = 1  # Number of times to repeat (1 = single run)
+    wait_time_s: float = 2.0  # Wait time after stabilize before homing
+    homing_force_N: float = 50.0  # Force to apply when returning home
 
 
 class MotorController:
@@ -103,6 +112,12 @@ class MotorController:
         self.shock_state = ShockState.IDLE
         self.shock_first_crossing = False
         self.shock_stabilize_position_um = 0
+        self.shock_current_repetition = 0  # Current repetition count (0-based)
+        self.shock_wait_start_time = 0.0  # Time when wait state started
+
+        # Profiles directory
+        self.profiles_dir = Path("profiles")
+        self.profiles_dir.mkdir(exist_ok=True)
 
         # Thread safety
         self._state_lock = threading.Lock()
@@ -298,14 +313,28 @@ class MotorController:
         except Exception as e:
             print(f"Error zeroing position: {e}")
 
-    def set_shock_profile_parameters(self, accel_force_N: float, decel_force_N: float,
-                                     switch_position_mm: float, end_position_mm: float):
-        """Set shock profile parameters"""
+    def set_shock_profile_parameters(self, name: str = None, accel_force_N: float = None,
+                                     decel_force_N: float = None, switch_position_mm: float = None,
+                                     end_position_mm: float = None, repetitions: int = None,
+                                     wait_time_s: float = None, homing_force_N: float = None):
+        """Set shock profile parameters (only updates provided values)"""
         with self._shock_lock:
-            self.shock_params.accel_force_N = accel_force_N
-            self.shock_params.decel_force_N = decel_force_N
-            self.shock_params.switch_position_mm = switch_position_mm
-            self.shock_params.end_position_mm = end_position_mm
+            if name is not None:
+                self.shock_params.name = name
+            if accel_force_N is not None:
+                self.shock_params.accel_force_N = accel_force_N
+            if decel_force_N is not None:
+                self.shock_params.decel_force_N = decel_force_N
+            if switch_position_mm is not None:
+                self.shock_params.switch_position_mm = switch_position_mm
+            if end_position_mm is not None:
+                self.shock_params.end_position_mm = end_position_mm
+            if repetitions is not None:
+                self.shock_params.repetitions = repetitions
+            if wait_time_s is not None:
+                self.shock_params.wait_time_s = wait_time_s
+            if homing_force_N is not None:
+                self.shock_params.homing_force_N = homing_force_N
 
     def start_shock_profile(self):
         """Start shock profile execution"""
@@ -313,7 +342,8 @@ class MotorController:
             if self.shock_state == ShockState.IDLE:
                 self.shock_state = ShockState.ACCELERATE
                 self.shock_first_crossing = False
-                print("Shock profile started")
+                self.shock_current_repetition = 0
+                print(f"Shock profile started: {self.shock_params.repetitions} repetition(s)")
             else:
                 print(f"Cannot start shock profile - current state: {self.shock_state}")
 
@@ -323,6 +353,103 @@ class MotorController:
             self.shock_state = ShockState.IDLE
             self.shock_first_crossing = False
             print("Shock profile aborted")
+
+    def save_shock_profile(self, name: str = None) -> bool:
+        """
+        Save current shock profile parameters to disk.
+
+        Args:
+            name: Profile name (if None, uses current params.name)
+
+        Returns:
+            True if saved successfully
+        """
+        try:
+            with self._shock_lock:
+                profile_name = name if name else self.shock_params.name
+                # Update name in params if provided
+                if name:
+                    self.shock_params.name = name
+
+                # Convert to dict and save
+                profile_dict = asdict(self.shock_params)
+
+                # Sanitize filename
+                safe_name = "".join(c for c in profile_name if c.isalnum() or c in (' ', '-', '_')).strip()
+                filename = self.profiles_dir / f"{safe_name}.json"
+
+                with open(filename, 'w') as f:
+                    json.dump(profile_dict, f, indent=2)
+
+                print(f"Profile saved: {filename}")
+                return True
+
+        except Exception as e:
+            print(f"Error saving profile: {e}")
+            return False
+
+    def load_shock_profile(self, name: str) -> bool:
+        """
+        Load shock profile parameters from disk.
+
+        Args:
+            name: Profile name to load
+
+        Returns:
+            True if loaded successfully
+        """
+        try:
+            # Sanitize filename
+            safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).strip()
+            filename = self.profiles_dir / f"{safe_name}.json"
+
+            if not filename.exists():
+                print(f"Profile not found: {filename}")
+                return False
+
+            with open(filename, 'r') as f:
+                profile_dict = json.load(f)
+
+            with self._shock_lock:
+                # Update parameters from dict
+                self.shock_params = ShockProfileParameters(**profile_dict)
+
+            print(f"Profile loaded: {filename}")
+            return True
+
+        except Exception as e:
+            print(f"Error loading profile: {e}")
+            return False
+
+    def list_shock_profiles(self) -> list:
+        """
+        List all available shock profiles.
+
+        Returns:
+            List of profile names
+        """
+        try:
+            profiles = []
+            for file in self.profiles_dir.glob("*.json"):
+                profiles.append(file.stem)
+            return sorted(profiles)
+        except Exception as e:
+            print(f"Error listing profiles: {e}")
+            return []
+
+    def get_shock_profile_parameters(self) -> ShockProfileParameters:
+        """Get a copy of current shock profile parameters"""
+        with self._shock_lock:
+            return ShockProfileParameters(
+                name=self.shock_params.name,
+                accel_force_N=self.shock_params.accel_force_N,
+                decel_force_N=self.shock_params.decel_force_N,
+                switch_position_mm=self.shock_params.switch_position_mm,
+                end_position_mm=self.shock_params.end_position_mm,
+                repetitions=self.shock_params.repetitions,
+                wait_time_s=self.shock_params.wait_time_s,
+                homing_force_N=self.shock_params.homing_force_N
+            )
 
     def _control_loop(self):
         """Main control loop (runs in separate thread)"""
@@ -439,6 +566,45 @@ class MotorController:
                                 current_time
                             )
                             self.actuator.set_streamed_force_mN(int(force_command))
+
+                            # Check if we need to wait before homing
+                            if self.shock_current_repetition < self.shock_params.repetitions - 1:
+                                # More repetitions to go - transition to WAIT
+                                self.shock_state = ShockState.WAIT
+                                self.shock_wait_start_time = current_time
+                                print(f"Shock: STABILIZE → WAIT (rep {self.shock_current_repetition + 1}/{self.shock_params.repetitions})")
+                            else:
+                                # All repetitions complete
+                                self.shock_state = ShockState.IDLE
+                                print(f"Shock profile complete: {self.shock_params.repetitions} repetition(s)")
+
+                        elif current_shock_state == ShockState.WAIT:
+                            # Hold position while waiting
+                            force_command = self.pid.compute(
+                                self.shock_stabilize_position_um,
+                                stream_data.position,
+                                current_time
+                            )
+                            self.actuator.set_streamed_force_mN(int(force_command))
+
+                            # Check if wait time elapsed
+                            if current_time - self.shock_wait_start_time >= self.shock_params.wait_time_s:
+                                self.shock_state = ShockState.HOMING
+                                print(f"Shock: WAIT → HOMING")
+
+                        elif current_shock_state == ShockState.HOMING:
+                            # Apply homing force to return to zero (flip sign for negative direction)
+                            homing_force_mN = self.shock_params.homing_force_N * 1000.0
+                            self.actuator.set_streamed_force_mN(int(homing_force_mN))
+
+                            # Check if back at home (within tolerance)
+                            position_tolerance_mm = 2.0  # 2mm tolerance
+                            if abs(position_mm) < position_tolerance_mm:
+                                # Back at home - start next repetition
+                                self.shock_current_repetition += 1
+                                self.shock_state = ShockState.ACCELERATE
+                                self.shock_first_crossing = False
+                                print(f"Shock: HOMING → ACCELERATE (starting rep {self.shock_current_repetition + 1}/{self.shock_params.repetitions})")
 
                 # Update state (fast, no copy)
                 with self._state_lock:

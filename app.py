@@ -66,6 +66,7 @@ class MotorGUI:
         self.connect_btn = None
         self.disconnect_btn = None
         self.shock_state_label: Optional[ui.label] = None
+        self.profile_select: Optional[ui.select] = None
 
         # Register callback for motor state updates
         self.controller.state_update_callback = self._on_state_update
@@ -227,25 +228,52 @@ class MotorGUI:
                     )).props('flat dense')
                 pid_row.visible = False  # Hidden by default (Sleep mode)
 
-                # Shock profile control (conditionally visible)
-                with ui.row().classes('items-center gap-2') as shock_row:
-                    accel_force_input = ui.number('Accel Force (N)', value=150.0, step=10, format='%.0f').style('width: 120px')
-                    decel_force_input = ui.number('Decel Force (N)', value=-180.0, step=10, format='%.0f').style('width: 120px')
-                    switch_pos_input = ui.number('Switch (mm)', value=60.0, step=1, format='%.1f').style('width: 100px')
-                    end_pos_input = ui.number('End (mm)', value=100.0, step=1, format='%.1f').style('width: 100px')
+                # Shock profile control (conditionally visible) - use column layout
+                with ui.column().classes('w-full gap-2') as shock_container:
+                    # Row 1: Profile management
+                    with ui.row().classes('items-center gap-2'):
+                        profile_name_input = ui.input('Profile Name', value='Default Profile').style('width: 200px')
 
-                    ui.separator().props('vertical')
+                        # Profile selector dropdown (populated dynamically)
+                        profile_select = ui.select(
+                            options=[],
+                            label='Load Profile',
+                            on_change=lambda e: self._load_profile(e.value) if e.value else None
+                        ).style('width: 200px')
 
-                    shock_state_label = ui.label('State: IDLE').classes('text-sm font-bold')
+                        ui.button('Save', on_click=lambda: self._save_profile(profile_name_input.value)).props('color=primary flat dense')
+                        ui.button('Refresh', on_click=lambda: self._refresh_profiles(profile_select)).props('flat dense icon=refresh')
 
-                    ui.button('Start', on_click=lambda: self._start_shock_profile(
-                        accel_force_input.value, decel_force_input.value,
-                        switch_pos_input.value, end_pos_input.value
-                    )).props('color=green flat dense')
+                    # Row 2: Motion parameters
+                    with ui.row().classes('items-center gap-2'):
+                        accel_force_input = ui.number('Accel Force (N)', value=150.0, step=10, format='%.0f').style('width: 120px')
+                        decel_force_input = ui.number('Decel Force (N)', value=-180.0, step=10, format='%.0f').style('width: 120px')
+                        switch_pos_input = ui.number('Switch (mm)', value=60.0, step=1, format='%.1f').style('width: 100px')
+                        end_pos_input = ui.number('End (mm)', value=100.0, step=1, format='%.1f').style('width: 100px')
 
-                    ui.button('Abort', on_click=self._abort_shock_profile).props('color=red flat dense')
+                    # Row 3: Repetition parameters and controls
+                    with ui.row().classes('items-center gap-2'):
+                        repetitions_input = ui.number('Repetitions', value=1, step=1, format='%d', min=1).style('width: 100px')
+                        wait_time_input = ui.number('Wait Time (s)', value=2.0, step=0.5, format='%.1f').style('width: 110px')
+                        homing_force_input = ui.number('Homing Force (N)', value=50.0, step=10, format='%.0f').style('width: 130px')
 
-                shock_row.visible = False  # Hidden by default (Sleep mode)
+                        ui.separator().props('vertical')
+
+                        shock_state_label = ui.label('State: IDLE').classes('text-sm font-bold')
+
+                        ui.button('Start', on_click=lambda: self._start_shock_profile(
+                            profile_name_input.value,
+                            accel_force_input.value, decel_force_input.value,
+                            switch_pos_input.value, end_pos_input.value,
+                            int(repetitions_input.value), wait_time_input.value, homing_force_input.value
+                        )).props('color=green flat dense')
+
+                        ui.button('Abort', on_click=self._abort_shock_profile).props('color=red flat dense')
+
+                shock_container.visible = False  # Hidden by default (Sleep mode)
+
+                # Store references
+                self.profile_select = profile_select
 
                 # Store reference to shock state label for updates
                 self.shock_state_label = shock_state_label
@@ -256,7 +284,9 @@ class MotorGUI:
                     force_row.visible = (mode == 'Force Direct')
                     position_row.visible = (mode == 'Position')
                     pid_row.visible = (mode == 'Position')
-                    shock_row.visible = (mode == 'Shock Profile')
+                    shock_container.visible = (mode == 'Shock Profile')
+                    if mode == 'Shock Profile':
+                        self._refresh_profiles(profile_select)
                     self._set_mode(mode)
 
                 mode_select.on_value_change(on_mode_change)
@@ -367,17 +397,62 @@ class MotorGUI:
         self.controller.update_pid_parameters(kp=kp, ki=ki, kd=kd, max_output=max_force_mN, min_output=min_force_mN)
         ui.notify(f'PID updated: Kp={kp:.3f}, Ki={ki:.4f}, Kd={kd:.4f} | Limits: [{min_force_n:.0f}, {max_force_n:.0f}] N', type='info')
 
-    def _start_shock_profile(self, accel_force_n: float, decel_force_n: float, switch_pos_mm: float, end_pos_mm: float):
+    def _start_shock_profile(self, name: str, accel_force_n: float, decel_force_n: float,
+                            switch_pos_mm: float, end_pos_mm: float,
+                            repetitions: int, wait_time_s: float, homing_force_n: float):
         """Start shock profile execution with given parameters"""
         # Update parameters
         self.controller.set_shock_profile_parameters(
-            accel_force_n, decel_force_n, switch_pos_mm, end_pos_mm
+            name=name,
+            accel_force_N=accel_force_n,
+            decel_force_N=decel_force_n,
+            switch_position_mm=switch_pos_mm,
+            end_position_mm=end_pos_mm,
+            repetitions=repetitions,
+            wait_time_s=wait_time_s,
+            homing_force_N=homing_force_n
         )
         # Start execution
         self.controller.start_shock_profile()
-        ui.notify(f'Shock profile started: Accel={accel_force_n:.0f}N, Decel={decel_force_n:.0f}N', type='positive')
+        ui.notify(f'Shock profile started: {name} ({repetitions} rep)', type='positive')
 
     def _abort_shock_profile(self):
         """Abort shock profile execution"""
         self.controller.abort_shock_profile()
         ui.notify('Shock profile aborted', type='warning')
+
+    def _save_profile(self, name: str):
+        """Save current shock profile to disk"""
+        if not name or name.strip() == '':
+            ui.notify('Please enter a profile name', type='warning')
+            return
+
+        if self.controller.save_shock_profile(name):
+            ui.notify(f'Profile saved: {name}', type='positive')
+            if self.profile_select:
+                self._refresh_profiles(self.profile_select)
+        else:
+            ui.notify('Failed to save profile', type='negative')
+
+    def _load_profile(self, name: str):
+        """Load shock profile from disk and update GUI"""
+        if not name:
+            return
+
+        if self.controller.load_shock_profile(name):
+            ui.notify(f'Profile loaded: {name}', type='positive')
+            # TODO: Update GUI inputs with loaded parameters
+            # This would require storing references to all input widgets
+        else:
+            ui.notify('Failed to load profile', type='negative')
+
+    def _refresh_profiles(self, profile_select):
+        """Refresh the list of available profiles"""
+        profiles = self.controller.list_shock_profiles()
+        if profiles:
+            profile_select.options = [''] + profiles  # Empty option at start
+            profile_select.value = ''
+        else:
+            profile_select.options = ['']
+            profile_select.value = ''
+        profile_select.update()
