@@ -187,40 +187,50 @@ class MotorGUI:
         # Third row - Control setpoints
         with ui.card().classes('w-full'):
             ui.label('Control Setpoints').classes('text-h6')
-            with ui.row().classes('w-full items-end gap-6'):
+            with ui.row().classes('w-full items-center gap-4').style('min-height: 60px'):
                 # Mode selection
                 mode_select = ui.select(
                     ['Sleep', 'Force Direct', 'Position'],
                     value='Sleep',
                     label='Mode'
-                ).style('width: 140px')
-                mode_select.on_value_change(lambda e: self._set_mode(e.value))
+                ).style('width: 150px')
 
-                ui.separator().props('vertical')
+                # Force control (conditionally visible)
+                with ui.row().classes('items-center gap-2') as force_row:
+                    force_input = ui.number('Force (N)', value=0.0, step=0.1, format='%.2f').style('width: 110px')
+                    ui.button('Apply', on_click=lambda: self._set_force(force_input.value)).props('flat dense')
+                force_row.visible = False  # Hidden by default (Sleep mode)
 
-                # Force control
-                force_input = ui.number('Force (N)', value=0.0, step=0.1, format='%.2f').style('width: 120px')
-                ui.button('Set Force', on_click=lambda: self._set_force(force_input.value)).props('size=sm')
+                # Position control (conditionally visible)
+                with ui.row().classes('items-center gap-2') as position_row:
+                    position_input = ui.number('Position (mm)', value=35.0, step=0.1, format='%.2f').style('width: 110px')
+                    ui.button('Apply', on_click=lambda: self._set_position(position_input.value)).props('flat dense')
+                position_row.visible = False  # Hidden by default (Sleep mode)
 
-                ui.separator().props('vertical')
+                # PID tuning (conditionally visible - only for Position mode)
+                with ui.row().classes('items-center gap-2') as pid_row:
+                    ui.label('PID:').classes('text-sm')
+                    kp_input = ui.number('Kp', value=0.1, step=0.01, format='%.3f').style('width: 90px')
+                    ki_input = ui.number('Ki', value=0.01, step=0.001, format='%.4f').style('width: 90px')
+                    kd_input = ui.number('Kd', value=0.005, step=0.001, format='%.4f').style('width: 90px')
+                    ui.button('Update', on_click=lambda: self._update_pid(
+                        kp_input.value, ki_input.value, kd_input.value
+                    )).props('flat dense')
+                pid_row.visible = False  # Hidden by default (Sleep mode)
 
-                # Position control
-                position_input = ui.number('Position (mm)', value=35.0, step=0.1, format='%.2f').style('width: 120px')
-                ui.button('Set Position', on_click=lambda: self._set_position(position_input.value)).props('size=sm')
+                # Update visibility when mode changes
+                def on_mode_change(e):
+                    mode = e.value
+                    force_row.visible = (mode == 'Force Direct')
+                    position_row.visible = (mode == 'Position')
+                    pid_row.visible = (mode == 'Position')
+                    self._set_mode(mode)
 
-                ui.separator().props('vertical')
-
-                # PID tuning
-                kp_input = ui.number('Kp', value=0.1, step=0.01, format='%.3f').style('width: 100px')
-                ki_input = ui.number('Ki', value=0.01, step=0.001, format='%.4f').style('width: 100px')
-                kd_input = ui.number('Kd', value=0.005, step=0.001, format='%.4f').style('width: 100px')
-                ui.button('Update PID', on_click=lambda: self._update_pid(
-                    kp_input.value, ki_input.value, kd_input.value
-                )).props('size=sm')
+                mode_select.on_value_change(on_mode_change)
 
         # Bottom row - Charts side by side
-        with ui.row().classes('w-full gap-4'):
-            with ui.card().classes('w-1/2'):
+        with ui.row().classes('w-full gap-2'):
+            with ui.card().classes('flex-1'):
                 ui.label('Position vs Time').classes('text-h6')
                 self.position_chart = ui.echart({
                     'xAxis': {'type': 'value', 'name': 'Time (s)'},
@@ -235,7 +245,7 @@ class MotorGUI:
                     'legend': {'data': ['Position']}
                 }).classes('w-full h-80')
 
-            with ui.card().classes('w-1/2'):
+            with ui.card().classes('flex-1'):
                 ui.label('Force vs Time').classes('text-h6')
                 self.force_chart = ui.echart({
                     'xAxis': {'type': 'value', 'name': 'Time (s)'},
