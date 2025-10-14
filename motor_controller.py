@@ -403,8 +403,8 @@ class MotorController:
                             self.actuator.set_streamed_force_mN(0)
 
                         elif current_shock_state == ShockState.ACCELERATE:
-                            # Accelerate until switch position (negative direction)
-                            accel_force_mN = self.shock_params.accel_force_N * 1000.0
+                            # Accelerate until switch position (negative direction - flip force sign)
+                            accel_force_mN = -self.shock_params.accel_force_N * 1000.0
                             self.actuator.set_streamed_force_mN(int(accel_force_mN))
 
                             # Check if reached switch position (going negative)
@@ -414,8 +414,8 @@ class MotorController:
                                 print(f"Shock: ACCELERATE → DECELERATE at {position_mm:.2f}mm")
 
                         elif current_shock_state == ShockState.DECELERATE:
-                            # Decelerate/reverse - track crossings
-                            decel_force_mN = self.shock_params.decel_force_N * 1000.0
+                            # Decelerate/reverse - track crossings (flip force sign)
+                            decel_force_mN = -self.shock_params.decel_force_N * 1000.0
                             self.actuator.set_streamed_force_mN(int(decel_force_mN))
 
                             # Track crossings of end_position (negative direction)
