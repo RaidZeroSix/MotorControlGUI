@@ -593,13 +593,14 @@ class MotorController:
                                 print(f"Shock: WAIT → HOMING")
 
                         elif current_shock_state == ShockState.HOMING:
-                            # Apply homing force to return to zero (flip sign for negative direction)
+                            # Apply homing force to return to 5mm (not zero, for tolerance)
                             homing_force_mN = self.shock_params.homing_force_N * 1000.0
                             self.actuator.set_streamed_force_mN(int(homing_force_mN))
 
-                            # Check if back at home (within tolerance)
-                            position_tolerance_mm = 2.0  # 2mm tolerance
-                            if abs(position_mm) < position_tolerance_mm:
+                            # Check if back at home position (5mm ± 2mm)
+                            target_home_mm = 5.0
+                            position_tolerance_mm = 2.0
+                            if abs(position_mm - target_home_mm) < position_tolerance_mm:
                                 # Back at home - start next repetition
                                 self.shock_current_repetition += 1
                                 self.shock_state = ShockState.ACCELERATE
