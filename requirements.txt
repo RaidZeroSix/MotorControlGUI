@@ -15,3 +15,8 @@ plotly>=5.18.0
 
 # Serial port scanning
 pyserial>=3.5
+
+# Windows performance (process priority)
+# Install on Windows for better real-time performance:
+# pip install pywin32
+pywin32>=305; sys_platform == 'win32'

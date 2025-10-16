@@ -9,6 +9,8 @@ import threading
 import time
 import json
 import os
+import sys
+import platform
 from typing import Optional, Callable
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -16,6 +18,18 @@ from pathlib import Path
 
 from pyorcasdk import Actuator, MotorMode, OrcaError
 from pid_controller import PIDController, PIDParameters
+
+# Platform-specific imports for process priority
+if platform.system() == 'Windows':
+    try:
+        import win32process
+        import win32api
+        WINDOWS_PRIORITY_AVAILABLE = True
+    except ImportError:
+        WINDOWS_PRIORITY_AVAILABLE = False
+        print("Warning: pywin32 not installed. Run 'pip install pywin32' for better performance on Windows.")
+else:
+    WINDOWS_PRIORITY_AVAILABLE = False
 
 
 class ControlMode(Enum):
@@ -203,6 +217,9 @@ class MotorController:
             print("Not connected to motor")
             return False
 
+        # Set process priority to high (Windows only)
+        self._set_process_priority()
+
         self._stop_flag.clear()
         self._control_thread = threading.Thread(target=self._control_loop, daemon=True)
         self._control_thread.start()
@@ -211,6 +228,24 @@ class MotorController:
             self.state.running = True
 
         return True
+
+    def _set_process_priority(self):
+        """Set process and thread priority for real-time performance (Windows)"""
+        if WINDOWS_PRIORITY_AVAILABLE:
+            try:
+                # Get current process handle
+                pid = win32api.GetCurrentProcessId()
+                handle = win32api.OpenProcess(win32process.PROCESS_ALL_ACCESS, True, pid)
+
+                # Set process priority to HIGH (not REALTIME to avoid system lockup)
+                win32process.SetPriorityClass(handle, win32process.HIGH_PRIORITY_CLASS)
+                print("Process priority set to HIGH")
+
+            except Exception as e:
+                print(f"Could not set process priority: {e}")
+                print("Try running as Administrator for better performance")
+        elif platform.system() == 'Windows':
+            print("Install pywin32 for better performance: pip install pywin32")
 
     def stop_control_loop(self):
         """Stop the control loop thread"""
@@ -455,6 +490,29 @@ class MotorController:
         """Main control loop (runs in separate thread)"""
         print(f"Control loop started (target: {self.update_rate_hz if self.update_rate_hz > 0 else 'MAX'} Hz)")
 
+        # Set thread priority to highest (Windows only)
+        if WINDOWS_PRIORITY_AVAILABLE:
+            try:
+                import ctypes
+                # Get current thread handle
+                thread_handle = ctypes.windll.kernel32.GetCurrentThread()
+                # Set to THREAD_PRIORITY_HIGHEST (not TIME_CRITICAL to avoid issues)
+                THREAD_PRIORITY_HIGHEST = 2
+                ctypes.windll.kernel32.SetThreadPriority(thread_handle, THREAD_PRIORITY_HIGHEST)
+                print("Control thread priority set to HIGHEST")
+            except Exception as e:
+                print(f"Could not set thread priority: {e}")
+
+        # Increase timer resolution on Windows for more accurate sleep
+        if platform.system() == 'Windows':
+            try:
+                import ctypes
+                # Request 1ms timer resolution
+                ctypes.windll.winmm.timeBeginPeriod(1)
+                print("Windows timer resolution set to 1ms")
+            except Exception as e:
+                print(f"Could not set timer resolution: {e}")
+
         last_report_time = time.time()
         loop_count = 0
         rate_report_interval = 1.0  # Report actual rate every second
@@ -656,5 +714,13 @@ class MotorController:
                     print(f"Control loop rate: {actual_rate:.1f} Hz")
                     loop_count = 0
                     last_report_time = current_time
+
+        # Cleanup timer resolution on Windows
+        if platform.system() == 'Windows':
+            try:
+                import ctypes
+                ctypes.windll.winmm.timeEndPeriod(1)
+            except:
+                pass
 
         print("Control loop stopped")

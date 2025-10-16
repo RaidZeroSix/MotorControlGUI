@@ -181,6 +181,14 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host ""
+Write-Host "Installing pywin32 for real-time performance..." -ForegroundColor Yellow
+& ".\venv\Scripts\pip.exe" install pywin32
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "WARNING: Failed to install pywin32" -ForegroundColor Yellow
+    Write-Host "Application will still work but with reduced performance" -ForegroundColor Yellow
+}
+
+Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
 Write-Host "Installation Complete!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
