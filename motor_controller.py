@@ -657,7 +657,7 @@ class MotorController:
 
                             # Check if back at home position (crossed past -5mm toward zero)
                             # Use > -5.0 instead of window to avoid missing fast crossings
-                            if position_mm > -5.0:
+                            if position_mm > -20.0:
                                 # Back at home - start next repetition
                                 self.shock_current_repetition += 1
                                 self.shock_state = ShockState.ACCELERATE
