@@ -643,6 +643,10 @@ class MotorController:
                 sleep_time = self.update_period - elapsed
                 if sleep_time > 0:
                     time.sleep(sleep_time)
+                elif sleep_time < -self.update_period * 0.1:  # More than 10% overrun
+                    # Warn if loop is consistently too slow (only occasionally to avoid spam)
+                    if loop_count % 100 == 0:
+                        print(f"WARNING: Control loop running {abs(sleep_time)*1000:.1f}ms behind target ({abs(sleep_time/self.update_period)*100:.0f}% overrun)")
 
             # Report actual loop rate periodically (check every 1000 iterations to reduce overhead)
             if loop_count % 1000 == 0:

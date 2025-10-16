@@ -41,9 +41,9 @@ class MotorGUI:
     """Main GUI application class"""
 
     def __init__(self):
-        # Initialize controller at maximum speed (0 = no sleep between iterations)
-        # This runs as fast as the hardware/SDK allows
-        self.controller = MotorController(update_rate_hz=0)
+        # Initialize controller at fixed 1000 Hz for deterministic control
+        # Fixed rate ensures consistent timing for shock profile execution
+        self.controller = MotorController(update_rate_hz=1000.0)
 
         # UI state
         self.connected = False
