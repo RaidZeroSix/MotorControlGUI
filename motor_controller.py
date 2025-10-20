@@ -177,8 +177,8 @@ class StateEstimator:
             return
 
         # Estimate acceleration from commanded force and friction
-        # Friction opposes motion (sign based on velocity direction)
-        friction_force = self.friction_N * np.sign(self.x[1]) if abs(self.x[1]) > 1.0 else 0
+        # Friction opposes motion: F_friction = -friction_magnitude * sign(velocity)
+        friction_force = -self.friction_N * np.sign(self.x[1]) if abs(self.x[1]) > 1.0 else 0
         a_mm_s2 = ((force_commanded_N - friction_force) / self.current_mass) * 1000.0
 
         # State transition matrix (kinematic equations)
@@ -258,7 +258,8 @@ class StateEstimator:
         x_future = self.x.copy()
 
         # Simple forward prediction
-        friction_force = self.friction_N * np.sign(x_future[1]) if abs(x_future[1]) > 1.0 else 0
+        # Friction opposes motion: F_friction = -friction_magnitude * sign(velocity)
+        friction_force = -self.friction_N * np.sign(x_future[1]) if abs(x_future[1]) > 1.0 else 0
         a_mm_s2 = ((force_commanded_N - friction_force) / self.current_mass) * 1000.0
 
         # Kinematic update
