@@ -931,7 +931,7 @@ class MotorController:
                             self.last_force_command_N = homing_force_N
 
                             # Check if back at home using ESTIMATED position
-                            if position_est_mm > -20.0:
+                            if position_est_mm > -30.0:
                                 # Back at home - start next repetition
                                 self.shock_current_repetition += 1
                                 self.shock_state = ShockState.ACCELERATE

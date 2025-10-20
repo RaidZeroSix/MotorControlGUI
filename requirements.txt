@@ -12,9 +12,13 @@ numpy>=1.24.0
 
 # Plotting (for NiceGUI charts)
 plotly>=5.18.0
+matplotlib>=3.7.0
 
 # Serial port scanning
 pyserial>=3.5
+
+# enDAQ data processing (for .IDE files)
+endaq>=1.0.0
 
 # Windows performance (process priority)
 # Install on Windows for better real-time performance:
