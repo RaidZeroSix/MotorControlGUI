@@ -18,6 +18,7 @@ from pathlib import Path
 
 from pyorcasdk import Actuator, MotorMode, OrcaError
 from pid_controller import PIDController, PIDParameters
+import numpy as np
 
 # Platform-specific imports for process priority
 if platform.system() == 'Windows':
@@ -87,6 +88,210 @@ class ShockProfileParameters:
     homing_force_N: float = 50.0  # Force to apply when returning home
 
 
+class StateEstimator:
+    """
+    Kalman filter that estimates position and velocity between measurements.
+    Uses force measurements to predict motion during communication gaps.
+    Fills in spatial resolution gaps at high speeds with variable sample rates.
+    """
+
+    # System masses
+    MASS_ANVIL_KG = 8.6  # kg - anvil mass alone
+    MASS_STRIKER_KG = 4.5  # kg - striker mass
+    MASS_TOTAL_KG = MASS_ANVIL_KG + MASS_STRIKER_KG  # 13.1 kg total
+
+    def __init__(self, mass_kg=MASS_TOTAL_KG):
+        """
+        Initialize state estimator.
+
+        Args:
+            mass_kg: Initial mass (default: anvil + striker)
+        """
+        self.current_mass = mass_kg
+
+        # State vector: [position_mm, velocity_mm_s]
+        self.x = np.array([0.0, 0.0])
+
+        # State covariance (uncertainty in our estimate)
+        self.P = np.array([
+            [1.0, 0.0],      # Low position uncertainty initially
+            [0.0, 100.0]     # Higher velocity uncertainty initially
+        ])
+
+        # Process noise (accounts for model uncertainty, friction variations)
+        self.Q_base = np.array([
+            [0.1, 0.0],       # Position process noise
+            [0.0, 200.0]      # Velocity process noise (friction uncertainty)
+        ])
+        self.Q = self.Q_base.copy()
+
+        # Measurement noise (motor's position sensor has 1μm resolution)
+        self.R = np.array([[0.01]])  # 0.01mm² variance
+
+        # Friction estimate (learned over time)
+        self.friction_N = 20.0
+        self.friction_alpha = 0.02  # Slow adaptation rate
+
+        # Diagnostics
+        self.innovation_history = []
+
+    def set_mass(self, mass_kg):
+        """
+        Update mass when system configuration changes.
+        Call this when switching between acceleration and deceleration.
+
+        Args:
+            mass_kg: New mass value
+        """
+        self.current_mass = mass_kg
+
+    def reset_state(self, position_mm=0.0, velocity_mm_s=0.0):
+        """
+        Reset state estimate (e.g., after zeroing position).
+
+        Args:
+            position_mm: Initial position
+            velocity_mm_s: Initial velocity
+        """
+        self.x = np.array([position_mm, velocity_mm_s])
+        self.P = np.array([
+            [1.0, 0.0],
+            [0.0, 100.0]
+        ])
+
+    def predict(self, force_commanded_N, dt):
+        """
+        Predict state forward using dynamics model.
+        This fills in the blanks between sparse measurements!
+
+        Uses kinematic equations:
+            x_new = x_old + v*dt + 0.5*a*dt²
+            v_new = v_old + a*dt
+        where a = (F_commanded - F_friction) / m
+
+        Args:
+            force_commanded_N: Commanded force in Newtons
+            dt: Time step since last update
+        """
+        if dt <= 0 or dt > 0.1:  # Sanity check
+            return
+
+        # Estimate acceleration from commanded force and friction
+        # Friction opposes motion (sign based on velocity direction)
+        friction_force = self.friction_N * np.sign(self.x[1]) if abs(self.x[1]) > 1.0 else 0
+        a_mm_s2 = ((force_commanded_N - friction_force) / self.current_mass) * 1000.0
+
+        # State transition matrix (kinematic equations)
+        F = np.array([
+            [1.0, dt],
+            [0.0, 1.0]
+        ])
+
+        # Control input matrix (force affects acceleration)
+        B = np.array([
+            [0.5 * dt**2],
+            [dt]
+        ])
+
+        # Predict state: x_new = F*x + B*a
+        self.x = F @ self.x + B.flatten() * a_mm_s2
+
+        # Predict covariance: P_new = F*P*F' + Q
+        # Scale Q by dt (more uncertainty over longer predictions)
+        Q_scaled = self.Q * (dt / 0.001)  # Normalized to 1ms
+        self.P = F @ self.P @ F.T + Q_scaled
+
+    def update(self, position_measured_mm):
+        """
+        Update state estimate with new position measurement.
+        Corrects our prediction when we get new data from motor.
+
+        Args:
+            position_measured_mm: Measured position from motor
+        """
+        # Measurement matrix (we only measure position, not velocity)
+        H = np.array([[1.0, 0.0]])
+
+        # Innovation (measurement residual)
+        y = position_measured_mm - H @ self.x
+        self.innovation_history.append(abs(y[0]))
+
+        # Keep last 100 innovations for diagnostics
+        if len(self.innovation_history) > 100:
+            self.innovation_history.pop(0)
+
+        # Innovation covariance
+        S = H @ self.P @ H.T + self.R
+
+        # Kalman gain (how much to trust measurement vs prediction)
+        K = self.P @ H.T / S
+
+        # Update state estimate
+        self.x = self.x + K.flatten() * y
+
+        # Update covariance (uncertainty decreases after measurement)
+        I = np.eye(2)
+        self.P = (I - K @ H) @ self.P
+
+        # Adapt friction estimate based on systematic errors
+        if len(self.innovation_history) >= 10:
+            avg_innovation = np.mean(self.innovation_history[-10:])
+            if avg_innovation > 1.0:  # Systematic error > 1mm
+                # Adjust friction slightly
+                friction_adjustment = 0.5 * np.sign(y[0])
+                self.friction_N += self.friction_alpha * friction_adjustment
+                self.friction_N = max(0.0, min(self.friction_N, 100.0))  # Clamp
+
+    def predict_future_state(self, force_commanded_N, time_ahead_s):
+        """
+        Predict where we'll be in the future (look-ahead for early commands).
+        Does NOT modify internal state.
+
+        Args:
+            force_commanded_N: Force that will be commanded
+            time_ahead_s: How far ahead to predict (seconds)
+
+        Returns:
+            Tuple of (predicted_position_mm, predicted_velocity_mm_s)
+        """
+        # Copy current state
+        x_future = self.x.copy()
+
+        # Simple forward prediction
+        friction_force = self.friction_N * np.sign(x_future[1]) if abs(x_future[1]) > 1.0 else 0
+        a_mm_s2 = ((force_commanded_N - friction_force) / self.current_mass) * 1000.0
+
+        # Kinematic update
+        x_future[0] += x_future[1] * time_ahead_s + 0.5 * a_mm_s2 * time_ahead_s**2
+        x_future[1] += a_mm_s2 * time_ahead_s
+
+        return x_future[0], x_future[1]
+
+    def get_position_mm(self):
+        """Get estimated position in mm"""
+        return self.x[0]
+
+    def get_velocity_mm_s(self):
+        """Get estimated velocity in mm/s"""
+        return self.x[1]
+
+    def get_state(self):
+        """Get full state vector [position_mm, velocity_mm_s]"""
+        return self.x.copy()
+
+    def get_uncertainty(self):
+        """Get position and velocity uncertainties (standard deviations)"""
+        return np.sqrt(np.diag(self.P))
+
+    def increase_process_noise(self, factor=10.0):
+        """Increase process noise during unpredictable phases (e.g., near collision)"""
+        self.Q = self.Q_base * factor
+
+    def reset_process_noise(self):
+        """Reset to normal process noise"""
+        self.Q = self.Q_base.copy()
+
+
 class MotorController:
     """
     Main motor controller class.
@@ -132,6 +337,17 @@ class MotorController:
         # Profiles directory
         self.profiles_dir = Path("profiles")
         self.profiles_dir.mkdir(exist_ok=True)
+
+        # State estimator for improved observability
+        self.state_estimator = StateEstimator(mass_kg=StateEstimator.MASS_TOTAL_KG)
+
+        # Timing for state estimation
+        self.last_measurement_time = None
+        self.last_force_command_N = 0.0
+
+        # Look-ahead parameters (for early command sending)
+        self.look_ahead_messages = 2  # Send command 2 messages early
+        self.estimated_message_period_s = 0.0011  # 1.1ms @ 900Hz (updated dynamically)
 
         # Thread safety
         self._state_lock = threading.Lock()
@@ -344,7 +560,9 @@ class MotorController:
         """Zero the motor position at current location"""
         try:
             self.actuator.zero_position()
-            print("Position zeroed")
+            # Reset state estimator when zeroing position
+            self.state_estimator.reset_state(position_mm=0.0, velocity_mm_s=0.0)
+            print("Position zeroed (estimator reset)")
         except Exception as e:
             print(f"Error zeroing position: {e}")
 
@@ -518,6 +736,9 @@ class MotorController:
         rate_report_interval = 1.0  # Report actual rate every second
         callback_decimation = 10  # Call callback every N iterations (~100Hz for UI updates)
 
+        # Moving average for message period estimation
+        message_period_history = []
+
         while not self._stop_flag.is_set():
             current_time = time.time()  # Single time call per iteration
             loop_start = current_time
@@ -528,6 +749,30 @@ class MotorController:
 
                 # Read current state from motor (using stream data for efficiency)
                 stream_data = self.actuator.get_stream_data()
+
+                # Calculate time since last measurement
+                if self.last_measurement_time is not None:
+                    dt = current_time - self.last_measurement_time
+                    # Update estimated message period (moving average)
+                    message_period_history.append(dt)
+                    if len(message_period_history) > 100:
+                        message_period_history.pop(0)
+                    self.estimated_message_period_s = np.mean(message_period_history)
+                else:
+                    dt = 0.001  # Initial guess
+                self.last_measurement_time = current_time
+
+                # STATE ESTIMATOR: Predict step (fill in the blanks since last measurement)
+                self.state_estimator.predict(self.last_force_command_N, dt)
+
+                # STATE ESTIMATOR: Update step (correct prediction with measurement)
+                position_measured_mm = stream_data.position / 1000.0
+                self.state_estimator.update(position_measured_mm)
+
+                # Get improved state estimates
+                position_est_mm = self.state_estimator.get_position_mm()
+                velocity_est_mm_s = self.state_estimator.get_velocity_mm_s()
+                pos_uncertainty, vel_uncertainty = self.state_estimator.get_uncertainty()
 
                 # Get current command (read-only, fast)
                 control_mode = self.command.control_mode
@@ -570,51 +815,75 @@ class MotorController:
                     self.actuator.set_streamed_force_mN(int(force_command))
 
                 elif control_mode == ControlMode.SHOCK_PROFILE:
-                    # Shock profile state machine
+                    # Shock profile state machine with state estimation
                     if self.state.mode != MotorMode.ForceMode:
                         self.actuator.set_mode(MotorMode.ForceMode)
                         with self._state_lock:
                             self.state.mode = MotorMode.ForceMode
 
-                    # Get current position in mm
-                    position_mm = stream_data.position / 1000.0
-
-                    # Execute shock state machine
+                    # Execute shock state machine using ESTIMATED states
                     with self._shock_lock:
                         current_shock_state = self.shock_state
 
                         if current_shock_state == ShockState.IDLE:
                             # Waiting - apply no force
                             self.actuator.set_streamed_force_mN(0)
+                            self.last_force_command_N = 0.0
 
                         elif current_shock_state == ShockState.ACCELERATE:
-                            # Accelerate until switch position (negative direction - flip force sign)
-                            accel_force_mN = -self.shock_params.accel_force_N * 1000.0
-                            self.actuator.set_streamed_force_mN(int(accel_force_mN))
+                            # Mass = anvil + striker (both moving together)
+                            self.state_estimator.set_mass(StateEstimator.MASS_TOTAL_KG)
 
-                            # Check if reached switch position (going negative)
-                            if position_mm < -self.shock_params.switch_position_mm:
+                            # Accelerate force (negative direction)
+                            accel_force_N = -self.shock_params.accel_force_N
+                            accel_force_mN = accel_force_N * 1000.0
+                            self.actuator.set_streamed_force_mN(int(accel_force_mN))
+                            self.last_force_command_N = accel_force_N
+
+                            # LOOK-AHEAD: Predict where we'll be in next few messages
+                            time_ahead = self.look_ahead_messages * self.estimated_message_period_s
+                            pos_future, vel_future = self.state_estimator.predict_future_state(
+                                accel_force_N, time_ahead
+                            )
+
+                            # Check if we WILL reach switch position (use future prediction!)
+                            if pos_future < -self.shock_params.switch_position_mm:
                                 self.shock_state = ShockState.DECELERATE
                                 self.shock_first_crossing = False
-                                print(f"Shock: ACCELERATE → DECELERATE at {position_mm:.2f}mm")
+                                # Update mass for deceleration (striker decouples!)
+                                self.state_estimator.set_mass(StateEstimator.MASS_ANVIL_KG)
+                                print(f"Shock: ACCELERATE → DECELERATE at est={position_est_mm:.2f}mm, "
+                                      f"predicted={pos_future:.2f}mm, "
+                                      f"measured={position_measured_mm:.2f}mm, "
+                                      f"vel={velocity_est_mm_s:.0f}mm/s")
 
                         elif current_shock_state == ShockState.DECELERATE:
-                            # Decelerate/reverse - track crossings (flip force sign)
-                            decel_force_mN = -self.shock_params.decel_force_N * 1000.0
-                            self.actuator.set_streamed_force_mN(int(decel_force_mN))
+                            # Mass = anvil only (striker decoupled, in free flight)
+                            # Already set during transition, but keep it updated
+                            self.state_estimator.set_mass(StateEstimator.MASS_ANVIL_KG)
 
-                            # Track crossings of end_position (negative direction)
+                            # Decelerate force (negative direction)
+                            decel_force_N = -self.shock_params.decel_force_N
+                            decel_force_mN = decel_force_N * 1000.0
+                            self.actuator.set_streamed_force_mN(int(decel_force_mN))
+                            self.last_force_command_N = decel_force_N
+
+                            # Track crossings using ESTIMATED position
                             if not self.shock_first_crossing:
                                 # Waiting for first crossing (forward in negative direction)
-                                if position_mm < -self.shock_params.end_position_mm:
+                                if position_est_mm < -self.shock_params.end_position_mm:
                                     self.shock_first_crossing = True
-                                    print(f"Shock: First crossing at {position_mm:.2f}mm (forward)")
+                                    print(f"Shock: First crossing at est={position_est_mm:.2f}mm, "
+                                          f"vel={velocity_est_mm_s:.0f}mm/s (forward)")
                             else:
                                 # Waiting for second crossing (backward toward zero)
-                                if position_mm > -self.shock_params.end_position_mm:
+                                if position_est_mm > -self.shock_params.end_position_mm:
                                     self.shock_state = ShockState.STABILIZE
                                     self.shock_stabilize_position_um = stream_data.position
-                                    print(f"Shock: Second crossing at {position_mm:.2f}mm (backward) → STABILIZE")
+                                    # Increase process noise after collision (model breaks down)
+                                    self.state_estimator.increase_process_noise(factor=20.0)
+                                    print(f"Shock: Second crossing at est={position_est_mm:.2f}mm, "
+                                          f"vel={velocity_est_mm_s:.0f}mm/s (backward) → STABILIZE")
 
                         elif current_shock_state == ShockState.STABILIZE:
                             # Switch to position control at stabilize position
@@ -651,18 +920,23 @@ class MotorController:
                                 print(f"Shock: WAIT → HOMING")
 
                         elif current_shock_state == ShockState.HOMING:
-                            # Apply homing force to return toward zero
-                            homing_force_mN = self.shock_params.homing_force_N * 1000.0
-                            self.actuator.set_streamed_force_mN(int(homing_force_mN))
+                            # Reset process noise for homing (predictable motion)
+                            self.state_estimator.reset_process_noise()
 
-                            # Check if back at home position (crossed past -5mm toward zero)
-                            # Use > -5.0 instead of window to avoid missing fast crossings
-                            if position_mm > -20.0:
+                            # Apply homing force to return toward zero
+                            homing_force_N = self.shock_params.homing_force_N
+                            homing_force_mN = homing_force_N * 1000.0
+                            self.actuator.set_streamed_force_mN(int(homing_force_mN))
+                            self.last_force_command_N = homing_force_N
+
+                            # Check if back at home using ESTIMATED position
+                            if position_est_mm > -20.0:
                                 # Back at home - start next repetition
                                 self.shock_current_repetition += 1
                                 self.shock_state = ShockState.ACCELERATE
                                 self.shock_first_crossing = False
-                                print(f"Shock: HOMING → ACCELERATE (starting rep {self.shock_current_repetition + 1}/{self.shock_params.repetitions})")
+                                print(f"Shock: HOMING → ACCELERATE at est={position_est_mm:.2f}mm "
+                                      f"(starting rep {self.shock_current_repetition + 1}/{self.shock_params.repetitions})")
 
                 # Update state (fast, no copy)
                 with self._state_lock:
