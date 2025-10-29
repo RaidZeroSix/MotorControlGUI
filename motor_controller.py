@@ -65,6 +65,7 @@ class MotorState:
     connected: bool = False
     running: bool = False
     shock_state: ShockState = ShockState.IDLE
+    thermal_pause: bool = False
 
 
 @dataclass
@@ -334,6 +335,7 @@ class MotorController:
         self.shock_stabilize_position_um = 0
         self.shock_current_repetition = 0  # Current repetition count (0-based)
         self.shock_wait_start_time = 0.0  # Time when wait state started
+        self.shock_thermal_pause = False  # Flag for thermal management pause
 
         # Profiles directory
         self.profiles_dir = Path("profiles")
@@ -915,8 +917,20 @@ class MotorController:
                             )
                             self.actuator.set_streamed_force_mN(int(force_command))
 
-                            # Check if wait time elapsed
-                            if current_time - self.shock_wait_start_time >= self.shock_params.wait_time_s:
+                            # Thermal management: pause if too hot, resume when cool
+                            current_temp = stream_data.temperature
+                            if current_temp >= 110:
+                                if not self.shock_thermal_pause:
+                                    self.shock_thermal_pause = True
+                                    print(f"Shock: THERMAL PAUSE activated at {current_temp}°C (waiting for cool-down to 45°C)")
+                            elif current_temp <= 45:
+                                if self.shock_thermal_pause:
+                                    self.shock_thermal_pause = False
+                                    print(f"Shock: THERMAL PAUSE cleared at {current_temp}°C (resuming operations)")
+
+                            # Check if wait time elapsed and not in thermal pause
+                            wait_time_elapsed = current_time - self.shock_wait_start_time >= self.shock_params.wait_time_s
+                            if wait_time_elapsed and not self.shock_thermal_pause:
                                 self.shock_state = ShockState.HOMING
                                 print(f"Shock: WAIT → HOMING")
 
@@ -948,6 +962,8 @@ class MotorController:
                     self.state.voltage_mV = stream_data.voltage
                     self.state.errors = stream_data.errors
                     self.state.control_mode = control_mode
+                    self.state.shock_state = self.shock_state
+                    self.state.thermal_pause = self.shock_thermal_pause
 
                 # Call callback only every N iterations (decimation for UI updates)
                 loop_count += 1
@@ -963,7 +979,9 @@ class MotorController:
                         mode=self.state.mode,
                         control_mode=control_mode,
                         connected=self.state.connected,
-                        running=self.state.running
+                        running=self.state.running,
+                        shock_state=self.shock_state,
+                        thermal_pause=self.shock_thermal_pause
                     )
                     self.state_update_callback(state_copy)
 

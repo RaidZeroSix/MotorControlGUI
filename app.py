@@ -66,6 +66,7 @@ class MotorGUI:
         self.connect_btn = None
         self.disconnect_btn = None
         self.shock_state_label: Optional[ui.label] = None
+        self.thermal_pause_label: Optional[ui.label] = None
         self.profile_select: Optional[ui.select] = None
 
         # Register callback for motor state updates
@@ -113,6 +114,10 @@ class MotorGUI:
         # Update shock profile state
         if self.shock_state_label:
             self.shock_state_label.text = f"State: {state.shock_state.value.upper()}"
+
+        # Update thermal pause indicator
+        if self.thermal_pause_label:
+            self.thermal_pause_label.visible = state.thermal_pause
 
     def create_ui(self):
         """Create the main UI"""
@@ -261,6 +266,9 @@ class MotorGUI:
 
                         shock_state_label = ui.label('State: IDLE').classes('text-sm font-bold')
 
+                        thermal_pause_label = ui.label('🔥 THERMAL PAUSE').classes('text-sm font-bold text-orange-600')
+                        thermal_pause_label.visible = False
+
                         ui.button('Start', on_click=lambda: self._start_shock_profile(
                             profile_name_input.value,
                             accel_force_input.value, decel_force_input.value,
@@ -277,6 +285,7 @@ class MotorGUI:
 
                 # Store reference to shock state label for updates
                 self.shock_state_label = shock_state_label
+                self.thermal_pause_label = thermal_pause_label
 
                 # Update visibility when mode changes
                 def on_mode_change(e):
