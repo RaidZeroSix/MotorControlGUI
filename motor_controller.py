@@ -16,7 +16,7 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 from pathlib import Path
 
-from pyorcasdk import Actuator, MotorMode, OrcaError
+from pyorcasdk import Actuator, MotorMode
 from pid_controller import PIDController, PIDParameters
 import numpy as np
 
