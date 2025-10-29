@@ -1076,7 +1076,7 @@ class MotorController:
                     )
                     self.state_update_callback(state_copy)
 
-            except (MotorCommunicationError, OrcaError) as e:
+            except MotorCommunicationError as e:
                 # Motor communication errors - attempt automatic reconnection
                 print(f"Communication error in control loop: {e}")
                 print("Attempting automatic reconnection...")
