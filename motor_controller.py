@@ -20,6 +20,11 @@ from pyorcasdk import Actuator, MotorMode, OrcaError
 from pid_controller import PIDController, PIDParameters
 import numpy as np
 
+
+class MotorCommunicationError(Exception):
+    """Exception raised for motor communication errors that should trigger reconnection"""
+    pass
+
 # Platform-specific imports for process priority
 if platform.system() == 'Windows':
     try:
@@ -352,6 +357,11 @@ class MotorController:
         self.look_ahead_messages = 2  # Send command 2 messages early
         self.estimated_message_period_s = 0.0011  # 1.1ms @ 900Hz (updated dynamically)
 
+        # Connection parameters for auto-reconnection
+        self._connection_port = None
+        self._connection_baud_rate = 1000000
+        self._connection_interframe_delay = 80
+
         # Thread safety
         self._state_lock = threading.Lock()
         self._command_lock = threading.Lock()
@@ -377,6 +387,11 @@ class MotorController:
             True if connection successful, False otherwise
         """
         try:
+            # Store connection parameters for auto-reconnection
+            self._connection_port = port
+            self._connection_baud_rate = baud_rate
+            self._connection_interframe_delay = interframe_delay
+
             error = self.actuator.open_serial_port(port, baud_rate, interframe_delay)
             if error:
                 print(f"Error opening serial port: {error.what()}")
@@ -420,6 +435,69 @@ class MotorController:
         with self._state_lock:
             self.state.connected = False
             self.state.running = False
+
+    def reconnect(self) -> bool:
+        """
+        Attempt to reconnect to the motor using stored connection parameters.
+        Preserves shock profile state for seamless resumption.
+
+        Returns:
+            True if reconnection successful, False otherwise
+        """
+        if self._connection_port is None:
+            print("No connection parameters stored, cannot reconnect")
+            return False
+
+        print(f"Attempting to reconnect to motor on port {self._connection_port}...")
+
+        try:
+            # Close existing connection if any
+            try:
+                self.actuator.close_serial_port()
+            except:
+                pass
+
+            # Attempt reconnection
+            error = self.actuator.open_serial_port(
+                self._connection_port,
+                self._connection_baud_rate,
+                self._connection_interframe_delay
+            )
+            if error:
+                print(f"Error reconnecting to serial port: {error.what()}")
+                return False
+
+            # Clear any existing errors
+            self.actuator.clear_errors()
+
+            # Enable streaming for high-speed communication
+            self.actuator.enable_stream()
+
+            # Restore motor to appropriate mode based on current control mode
+            with self._state_lock:
+                current_control_mode = self.state.control_mode
+
+            if current_control_mode == ControlMode.SLEEP:
+                error = self.actuator.set_mode(MotorMode.SleepMode)
+                if error:
+                    print(f"Error setting sleep mode: {error.what()}")
+                    return False
+            else:
+                # Any active control mode uses force mode
+                error = self.actuator.set_mode(MotorMode.ForceMode)
+                if error:
+                    print(f"Error setting force mode: {error.what()}")
+                    return False
+
+            with self._state_lock:
+                self.state.connected = True
+
+            print("Reconnection successful! Shock profile will resume where it left off.")
+            return True
+
+        except Exception as e:
+            print(f"Exception during reconnection: {e}")
+            return False
 
     def start_control_loop(self) -> bool:
         """
@@ -753,6 +831,11 @@ class MotorController:
                 # Read current state from motor (using stream data for efficiency)
                 stream_data = self.actuator.get_stream_data()
 
+                # Check for any motor errors and trigger reconnection
+                if stream_data.errors != 0:
+                    print(f"Motor error detected (error code: 0x{stream_data.errors:04X})")
+                    raise MotorCommunicationError(f"Motor error 0x{stream_data.errors:04X}")
+
                 # Calculate time since last measurement
                 if self.last_measurement_time is not None:
                     dt = current_time - self.last_measurement_time
@@ -985,8 +1068,37 @@ class MotorController:
                     )
                     self.state_update_callback(state_copy)
 
+            except (MotorCommunicationError, OrcaError) as e:
+                # Motor communication errors - attempt automatic reconnection
+                print(f"Communication error in control loop: {e}")
+                print("Attempting automatic reconnection...")
+
+                # Attempt reconnection (up to 3 tries)
+                reconnect_success = False
+                for attempt in range(3):
+                    if self.reconnect():
+                        reconnect_success = True
+                        print("Auto-reconnect successful, resuming control loop")
+                        break
+                    else:
+                        if attempt < 2:
+                            print(f"Reconnection attempt {attempt + 1} failed, retrying in 1 second...")
+                            time.sleep(1.0)
+
+                if not reconnect_success:
+                    print("Failed to reconnect after 3 attempts. Will retry on next cycle...")
+                    time.sleep(0.5)
+
+                # Continue loop (shock profile state is preserved)
+                continue
+
             except Exception as e:
-                print(f"Error in control loop: {e}")
+                # Other exceptions (code bugs) - log but don't reconnect
+                print(f"ERROR in control loop (not communication-related): {e}")
+                import traceback
+                traceback.print_exc()
+                # Brief pause before continuing
+                time.sleep(0.1)
 
             # Maintain update rate (if specified)
             if self.update_period > 0:
