@@ -831,6 +831,14 @@ class MotorController:
                 # Read current state from motor (using stream data for efficiency)
                 stream_data = self.actuator.get_stream_data()
 
+                # Watchdog: Check if communication has stalled (no successful response in 2 seconds)
+                time_since_last_response_us = self.actuator.time_since_last_response_microseconds()
+                COMM_TIMEOUT_THRESHOLD_US = 2_000_000  # 2 seconds in microseconds
+                if time_since_last_response_us > COMM_TIMEOUT_THRESHOLD_US:
+                    raise MotorCommunicationError(
+                        f"Communication timeout: no response for {time_since_last_response_us / 1_000_000:.1f}s"
+                    )
+
                 # Check for any motor errors and trigger reconnection
                 if stream_data.errors != 0:
                     print(f"Motor error detected (error code: 0x{stream_data.errors:04X})")
