@@ -839,10 +839,8 @@ class MotorController:
                         f"Communication timeout: no response for {time_since_last_response_us / 1_000_000:.1f}s"
                     )
 
-                # Check for any motor errors and trigger reconnection
-                if stream_data.errors != 0:
-                    print(f"Motor error detected (error code: 0x{stream_data.errors:04X})")
-                    raise MotorCommunicationError(f"Motor error 0x{stream_data.errors:04X}")
+                # Note: Motor error codes (stream_data.errors) are displayed in UI but do NOT trigger reconnection
+                # Only the watchdog timeout above triggers automatic reconnection
 
                 # Calculate time since last measurement
                 if self.last_measurement_time is not None:
