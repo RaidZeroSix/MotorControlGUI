@@ -363,7 +363,6 @@ class MotorGUI:
                 self.operator_profile_select = ui.select(
                     options=[],
                     label='Profile',
-                    value='1000 G Shock - SCAR 308',
                     on_change=lambda e: self._load_profile_operator(e.value) if e.value else None
                 ).style('width: 250px')
 
