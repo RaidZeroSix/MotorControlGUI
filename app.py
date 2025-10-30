@@ -400,6 +400,11 @@ class MotorGUI:
             self.operator_card.visible = is_operator
             self.developer_card.visible = not is_operator
 
+            # Put motor to sleep when switching modes for safety
+            if self.connected:
+                self.controller.set_control_mode(ControlMode.SLEEP)
+                ui.notify('Motor set to Sleep mode', type='info')
+
     def _refresh_ports(self, port_select):
         """Refresh the list of available serial ports"""
         available_ports = get_available_ports()
@@ -573,7 +578,7 @@ class MotorGUI:
 
         # Set to Force Direct mode and apply homing force
         self.controller.set_control_mode(ControlMode.FORCE_DIRECT)
-        self.controller.set_force(homing_force * 1000)  # Convert to mN
+        self.controller.set_force_setpoint(homing_force * 1000)  # Convert to mN
         ui.notify(f'Homing with {homing_force}N force', type='info')
 
     def _start_shock_operator(self):
