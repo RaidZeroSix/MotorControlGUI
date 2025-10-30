@@ -4,7 +4,6 @@
   "decel_force_N": -315,
   "switch_position_mm": 70,
   "end_position_mm": 73,
-  "repetitions": 1,
   "wait_time_s": 0.0,
   "homing_force_N": 180
 }
