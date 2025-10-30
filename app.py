@@ -67,7 +67,19 @@ class MotorGUI:
         self.disconnect_btn = None
         self.shock_state_label: Optional[ui.label] = None
         self.thermal_pause_label: Optional[ui.label] = None
-        self.profile_select: Optional[ui.select] = None
+        self.profile_select: Optional[ui.label] = None
+
+        # Mode switching
+        self.mode_toggle: Optional[ui.toggle] = None
+        self.operator_card: Optional[ui.card] = None
+        self.developer_card: Optional[ui.card] = None
+
+        # Operator mode UI elements
+        self.operator_profile_select: Optional[ui.select] = None
+        self.operator_repetitions_input: Optional[ui.number] = None
+        self.operator_homing_force_input: Optional[ui.number] = None
+        self.operator_shock_state_label: Optional[ui.label] = None
+        self.operator_thermal_pause_label: Optional[ui.label] = None
 
         # Register callback for motor state updates
         self.controller.state_update_callback = self._on_state_update
@@ -111,13 +123,21 @@ class MotorGUI:
             self.telemetry_labels['voltage'].text = f"{state.voltage_mV / 1000.0:.1f} V"
             self.telemetry_labels['errors'].text = f"0x{state.errors:04X}"
 
-        # Update shock profile state
+        # Update shock profile state (developer mode)
         if self.shock_state_label:
             self.shock_state_label.text = f"State: {state.shock_state.value.upper()}"
 
-        # Update thermal pause indicator
+        # Update thermal pause indicator (developer mode)
         if self.thermal_pause_label:
             self.thermal_pause_label.visible = state.thermal_pause
+
+        # Update shock profile state (operator mode)
+        if self.operator_shock_state_label:
+            self.operator_shock_state_label.text = f"State: {state.shock_state.value.upper()}"
+
+        # Update thermal pause indicator (operator mode)
+        if self.operator_thermal_pause_label:
+            self.operator_thermal_pause_label.visible = state.thermal_pause
 
     def create_ui(self):
         """Create the main UI"""
@@ -126,6 +146,12 @@ class MotorGUI:
         with ui.header().classes('items-center justify-between'):
             ui.label('Pixels On Target').classes('text-h4')
             self.status_label = ui.label('Status: Disconnected').classes('text-red-600')
+
+        # Mode toggle
+        with ui.card().classes('w-full'):
+            with ui.row().classes('items-center gap-4'):
+                ui.label('Interface Mode:').classes('font-bold')
+                self.mode_toggle = ui.toggle(['Operator', 'Developer'], value='Operator', on_change=self._on_mode_toggle)
 
         # Top row - Connection and control
         with ui.card().classes('w-full'):
@@ -191,8 +217,14 @@ class MotorGUI:
                     ui.label('Errors:').classes('font-bold')
                     self.telemetry_labels['errors'] = ui.label('0x0000')
 
-        # Third row - Control setpoints
-        with ui.card().classes('w-full'):
+        # Operator Mode Interface
+        with ui.card().classes('w-full') as operator_card:
+            self._create_operator_interface()
+        self.operator_card = operator_card
+        operator_card.visible = True  # Default to operator mode
+
+        # Developer Mode Interface (existing Control setpoints)
+        with ui.card().classes('w-full') as developer_card:
             ui.label('Control Setpoints').classes('text-h6')
             with ui.row().classes('w-full items-center gap-4').style('min-height: 60px'):
                 # Mode selection
@@ -300,8 +332,74 @@ class MotorGUI:
 
                 mode_select.on_value_change(on_mode_change)
 
+        self.developer_card = developer_card
+        developer_card.visible = False  # Hidden by default (Operator mode is default)
+
         # Start periodic UI update timer
         ui.timer(0.1, self._update_ui)
+
+    def _create_operator_interface(self):
+        """Create the simplified operator mode interface"""
+        ui.label('Operator Mode').classes('text-h6')
+
+        # Homing Panel
+        with ui.card().classes('w-full'):
+            ui.label('Homing Panel').classes('text-subtitle1 font-bold')
+            with ui.row().classes('items-center gap-4'):
+                self.operator_homing_force_input = ui.number(
+                    'Homing Force (N)',
+                    value=50.0,
+                    step=10,
+                    format='%.0f'
+                ).style('width: 130px')
+                ui.button('Home', on_click=self._run_homing).props('color=primary')
+
+        # Shock Panel
+        with ui.card().classes('w-full'):
+            ui.label('Shock Panel').classes('text-subtitle1 font-bold')
+
+            with ui.row().classes('items-center gap-4'):
+                # Profile selector
+                self.operator_profile_select = ui.select(
+                    options=[],
+                    label='Profile',
+                    value='1000 G Shock - SCAR 308',
+                    on_change=lambda e: self._load_profile_operator(e.value) if e.value else None
+                ).style('width: 250px')
+
+                # Repetitions
+                self.operator_repetitions_input = ui.number(
+                    'Rounds',
+                    value=1,
+                    step=1,
+                    format='%d',
+                    min=1
+                ).style('width: 100px')
+
+                ui.separator().props('vertical')
+
+                # State indicator
+                self.operator_shock_state_label = ui.label('State: IDLE').classes('text-sm font-bold')
+
+                # Thermal pause indicator
+                self.operator_thermal_pause_label = ui.label('🔥 THERMAL PAUSE').classes('text-sm font-bold text-orange-600')
+                self.operator_thermal_pause_label.visible = False
+
+                ui.separator().props('vertical')
+
+                # Start/Abort buttons
+                ui.button('Start', on_click=self._start_shock_operator).props('color=green')
+                ui.button('Abort', on_click=self._abort_shock_profile).props('color=red')
+
+        # Load profiles initially
+        self._refresh_profiles_operator()
+
+    def _on_mode_toggle(self, e):
+        """Handle mode toggle between Operator and Developer"""
+        if self.operator_card and self.developer_card:
+            is_operator = (e.value == 'Operator')
+            self.operator_card.visible = is_operator
+            self.developer_card.visible = not is_operator
 
     def _refresh_ports(self, port_select):
         """Refresh the list of available serial ports"""
@@ -465,3 +563,74 @@ class MotorGUI:
             profile_select.options = ['']
             profile_select.value = ''
         profile_select.update()
+
+    def _run_homing(self):
+        """Run homing operation with specified force"""
+        if not self.connected:
+            ui.notify('Please connect to motor first', type='warning')
+            return
+
+        homing_force = self.operator_homing_force_input.value if self.operator_homing_force_input else 50.0
+
+        # Set to Force Direct mode and apply homing force
+        self.controller.set_control_mode(ControlMode.FORCE_DIRECT)
+        self.controller.set_force(homing_force * 1000)  # Convert to mN
+        ui.notify(f'Homing with {homing_force}N force', type='info')
+
+    def _start_shock_operator(self):
+        """Start shock profile from operator mode"""
+        if not self.connected:
+            ui.notify('Please connect to motor first', type='warning')
+            return
+
+        # Load the selected profile (or use default)
+        profile_name = self.operator_profile_select.value if self.operator_profile_select else '1000 G Shock - SCAR 308'
+
+        # Load profile to get parameters
+        if self.controller.load_shock_profile(profile_name):
+            # Update repetitions from operator input
+            params = self.controller.shock_params
+            repetitions = int(self.operator_repetitions_input.value) if self.operator_repetitions_input else 1
+
+            # Start with updated repetitions
+            self.controller.set_shock_profile_parameters(
+                name=params.name,
+                accel_force_N=params.accel_force_N,
+                decel_force_N=params.decel_force_N,
+                switch_position_mm=params.switch_position_mm,
+                end_position_mm=params.end_position_mm,
+                repetitions=repetitions,
+                wait_time_s=params.wait_time_s,
+                homing_force_N=params.homing_force_N
+            )
+            self.controller.start_shock_profile()
+            ui.notify(f'Shock profile started: {profile_name} ({repetitions} rounds)', type='positive')
+        else:
+            ui.notify(f'Failed to load profile: {profile_name}', type='negative')
+
+    def _load_profile_operator(self, name: str):
+        """Load shock profile in operator mode"""
+        if not name:
+            return
+
+        if self.controller.load_shock_profile(name):
+            ui.notify(f'Profile loaded: {name}', type='positive')
+        else:
+            ui.notify('Failed to load profile', type='negative')
+
+    def _refresh_profiles_operator(self):
+        """Refresh the list of available profiles for operator mode"""
+        if not self.operator_profile_select:
+            return
+
+        profiles = self.controller.list_shock_profiles()
+        if profiles:
+            self.operator_profile_select.options = profiles
+            # Set default to SCAR 308 profile if available
+            if '1000 G Shock - SCAR 308' in profiles:
+                self.operator_profile_select.value = '1000 G Shock - SCAR 308'
+            elif profiles:
+                self.operator_profile_select.value = profiles[0]
+        else:
+            self.operator_profile_select.options = []
+        self.operator_profile_select.update()
