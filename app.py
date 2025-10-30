@@ -470,7 +470,9 @@ class MotorGUI:
     def _zero_position(self):
         """Zero the position reference"""
         self.controller.zero_position()
-        ui.notify('Position zeroed at current location', type='info')
+        # Set motor to sleep mode for safety (clears any active forces)
+        self.controller.set_control_mode(ControlMode.SLEEP)
+        ui.notify('Position zeroed and motor set to Sleep mode', type='info')
 
     def _set_mode(self, mode_str: str):
         """Set control mode"""
