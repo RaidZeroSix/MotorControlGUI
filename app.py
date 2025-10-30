@@ -47,6 +47,7 @@ class MotorGUI:
 
         # UI state
         self.connected = False
+        self.e_stop_active = False
 
         # Data for plotting (5 seconds at ~100Hz = 500 points)
         self.plot_window_seconds = 5.0
@@ -65,6 +66,7 @@ class MotorGUI:
         self.force_chart = None
         self.connect_btn = None
         self.disconnect_btn = None
+        self.e_stop_btn = None
         self.shock_state_label: Optional[ui.label] = None
         self.thermal_pause_label: Optional[ui.label] = None
         self.profile_select: Optional[ui.label] = None
@@ -95,6 +97,10 @@ class MotorGUI:
     async def _update_ui(self):
         """Periodic UI update"""
         state = self.controller.get_state()
+
+        # Enforce sleep mode when E-STOP is active
+        if self.e_stop_active and state.control_mode != ControlMode.SLEEP:
+            self.controller.set_control_mode(ControlMode.SLEEP)
 
         # Update status
         if self.status_label:
@@ -188,11 +194,12 @@ class MotorGUI:
                 ui.separator().props('vertical')
 
                 ui.button('Zero Position', on_click=self._zero_position).props('color=primary flat')
-                ui.button('E-STOP', on_click=self._emergency_stop).props('color=red')
+                e_stop_btn = ui.button('E-STOP', on_click=self._emergency_stop).props('color=red')
 
                 # Store button references for toggling visibility
                 self.connect_btn = connect_btn
                 self.disconnect_btn = disconnect_btn
+                self.e_stop_btn = e_stop_btn
 
         # Second row - Telemetry
         with ui.card().classes('w-full'):
@@ -463,9 +470,22 @@ class MotorGUI:
             self.disconnect_btn.visible = False
 
     def _emergency_stop(self):
-        """Emergency stop"""
-        self.controller.emergency_stop()
-        ui.notify('EMERGENCY STOP ACTIVATED', type='negative')
+        """Toggle emergency stop"""
+        self.e_stop_active = not self.e_stop_active
+
+        if self.e_stop_active:
+            # E-STOP activated - put motor to sleep
+            self.controller.set_control_mode(ControlMode.SLEEP)
+            if self.e_stop_btn:
+                self.e_stop_btn.props('color=orange')
+                self.e_stop_btn.text = 'E-STOP ACTIVE'
+            ui.notify('E-STOP ACTIVATED - All operations locked', type='negative')
+        else:
+            # E-STOP deactivated
+            if self.e_stop_btn:
+                self.e_stop_btn.props('color=red')
+                self.e_stop_btn.text = 'E-STOP'
+            ui.notify('E-STOP deactivated', type='positive')
 
     def _zero_position(self):
         """Zero the position reference"""
@@ -476,6 +496,10 @@ class MotorGUI:
 
     def _set_mode(self, mode_str: str):
         """Set control mode"""
+        if self.e_stop_active and mode_str != 'Sleep':
+            ui.notify('E-STOP is active - Cannot change mode', type='warning')
+            return
+
         mode_map = {
             'Sleep': ControlMode.SLEEP,
             'Force Direct': ControlMode.FORCE_DIRECT,
@@ -488,23 +512,39 @@ class MotorGUI:
 
     def _set_force(self, force_n: float):
         """Set force setpoint"""
+        if self.e_stop_active:
+            ui.notify('E-STOP is active - Cannot set force', type='warning')
+            return
+
         force_mN = force_n * 1000.0  # Convert N to mN
         self.controller.set_force_setpoint(force_mN)
         ui.notify(f'Force setpoint: {force_n:.2f} N', type='info')
 
     def _set_position(self, position_mm: float):
         """Set position setpoint"""
+        if self.e_stop_active:
+            ui.notify('E-STOP is active - Cannot set position', type='warning')
+            return
+
         position_um = position_mm * 1000.0  # Convert mm to um
         self.controller.set_position_setpoint(position_um)
         ui.notify(f'Position setpoint: {position_mm:.2f} mm', type='info')
 
     def _update_pid(self, kp: float, ki: float, kd: float):
         """Update PID parameters"""
+        if self.e_stop_active:
+            ui.notify('E-STOP is active - Cannot update PID', type='warning')
+            return
+
         self.controller.update_pid_parameters(kp=kp, ki=ki, kd=kd)
         ui.notify(f'PID updated: Kp={kp:.3f}, Ki={ki:.4f}, Kd={kd:.4f}', type='info')
 
     def _update_pid_and_limits(self, kp: float, ki: float, kd: float, max_force_n: float, min_force_n: float):
         """Update PID parameters and force limits"""
+        if self.e_stop_active:
+            ui.notify('E-STOP is active - Cannot update PID', type='warning')
+            return
+
         max_force_mN = max_force_n * 1000.0
         min_force_mN = min_force_n * 1000.0
         self.controller.update_pid_parameters(kp=kp, ki=ki, kd=kd, max_output=max_force_mN, min_output=min_force_mN)
@@ -514,6 +554,10 @@ class MotorGUI:
                             switch_pos_mm: float, end_pos_mm: float,
                             repetitions: int, wait_time_s: float, homing_force_n: float):
         """Start shock profile execution with given parameters"""
+        if self.e_stop_active:
+            ui.notify('E-STOP is active - Cannot start shock profile', type='warning')
+            return
+
         # Update parameters
         self.controller.set_shock_profile_parameters(
             name=name,
@@ -576,6 +620,10 @@ class MotorGUI:
             ui.notify('Please connect to motor first', type='warning')
             return
 
+        if self.e_stop_active:
+            ui.notify('E-STOP is active - Cannot run homing', type='warning')
+            return
+
         homing_force = self.operator_homing_force_input.value if self.operator_homing_force_input else 50.0
 
         # Set to Force Direct mode and apply homing force
@@ -587,6 +635,10 @@ class MotorGUI:
         """Start shock profile from operator mode"""
         if not self.connected:
             ui.notify('Please connect to motor first', type='warning')
+            return
+
+        if self.e_stop_active:
+            ui.notify('E-STOP is active - Cannot start shock profile', type='warning')
             return
 
         # Load the selected profile (or use default)
